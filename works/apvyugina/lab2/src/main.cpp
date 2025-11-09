@@ -18,7 +18,7 @@ int main() {
     auto A = generateMatrix<double>(MATRIX_SIZE);
     auto B = generateMatrix<double>(MATRIX_SIZE);
     
-    // Классическое умножение матриц
+    
     vector<vector<double>> res_simple(MATRIX_SIZE, vector<double>(MATRIX_SIZE));
     double elapsed = simple_multiplication<double>(A, B, res_simple, MATRIX_SIZE);
     cout << "Простое умножение заняло: " << elapsed << " секунд.\n";

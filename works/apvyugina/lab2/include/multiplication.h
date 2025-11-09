@@ -3,6 +3,7 @@
 
 #include <thread>
 #include "utils.h"
+#include "eigen_utils.h"
 
 using namespace std;
 using namespace Eigen;
