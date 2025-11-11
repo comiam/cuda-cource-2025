@@ -61,14 +61,16 @@ void sharedMatrixMultiplication(float* A, float* B, float* C, int matrix_size) {
 
 
 
-int main(){
+int main(int argc, char* argv[]) {
+
+    const int MATRIX_SIZE = stoi(argv[1]);
 
     init_random_generator();
 
-    int MATRIX_SIZE = 2048;
     auto A = generateMatrix<float>(MATRIX_SIZE);
     auto B = generateMatrix<float>(MATRIX_SIZE);
 
+    cout << "GPU" << endl;
     vector<vector<float>> res(MATRIX_SIZE, vector<float>(MATRIX_SIZE));
     double elapsed = multiplyMatrices(simpleMatrixMultiplication, A, B, res);
     cout << "Простое умножение заняло: " << elapsed << " секунд.\n";

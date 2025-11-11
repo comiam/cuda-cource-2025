@@ -6,18 +6,17 @@
 
 using namespace std;
 
-// Размер матриц
-const int MATRIX_SIZE = 512;
 
+int main(int argc, char* argv[]) {
 
-int main() {
+    const int MATRIX_SIZE = stoi(argv[1]);
 
     init_random_generator();
 
     auto A = generateMatrix<double>(MATRIX_SIZE);
     auto B = generateMatrix<double>(MATRIX_SIZE);
     
-    
+    cout << "CPU" << endl;
     vector<vector<double>> res_simple(MATRIX_SIZE, vector<double>(MATRIX_SIZE));
     double elapsed = simple_multiplication<double>(A, B, res_simple, MATRIX_SIZE);
     cout << "Простое умножение заняло: " << elapsed << " секунд.\n";
@@ -30,8 +29,9 @@ int main() {
     double elapsed3 = threaded_multiplication<double>(A, B, res_eigen, MATRIX_SIZE);
     cout << "Многопоточное умножение заняло: " << elapsed3 << " секунд.\n";
 
-
-    bool areEqual = compareMatrices(res_simple, res_threaded);
+    bool areEqual1 = compareMatrices(res_simple, res_threaded);
+    bool areEqual2 = compareMatrices(res_simple, res_eigen);
+    bool areEqual = areEqual1 & areEqual2;
     cout << "Матрицы равны: " << areEqual << endl;
 
     return 0;
