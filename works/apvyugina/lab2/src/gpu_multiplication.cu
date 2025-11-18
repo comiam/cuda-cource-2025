@@ -8,22 +8,22 @@ using namespace std;
 
 
 __global__ 
-void simpleMatrixMultiplication(float* A, float* B, float* C, int matrix_size) {
+void simpleMatrixMultiplication(float* A, float* B, float* C, int M, int N, int P) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if(row < matrix_size && col < matrix_size) {
+    if(row < M && col < P) {
         float sum = 0.0f;
-        for(int k = 0; k < matrix_size; k++) {
-            sum += A[row * matrix_size + k] * B[k * matrix_size + col];
+        for(int k = 0; k < N; k++) {
+            sum += A[row * N + k] * B[k * N + col];
         }
-        C[row * matrix_size + col] = sum;
+        C[row * N + col] = sum;
     }
 }
 
 
 __global__ 
-void sharedMatrixMultiplication(float* A, float* B, float* C, int matrix_size) {
+void sharedMatrixMultiplication(float* A, float* B, float* C, int M, int N, int P, int matrix_size) {
     __shared__ float As[BLOCK_DIM][BLOCK_DIM];
     __shared__ float Bs[BLOCK_DIM][BLOCK_DIM];
 
@@ -32,15 +32,15 @@ void sharedMatrixMultiplication(float* A, float* B, float* C, int matrix_size) {
 
     float acc = 0.0f;
 
-    for (int m = 0; m < (matrix_size + BLOCK_DIM - 1)/BLOCK_DIM; ++m) {
-        if (row < matrix_size && threadIdx.x + m * BLOCK_DIM < matrix_size) {
-            As[threadIdx.y][threadIdx.x] = A[row * matrix_size + threadIdx.x + m * BLOCK_DIM];
+    for (int t = 0; t < (matrix_size + BLOCK_DIM - 1)/BLOCK_DIM; ++t) {
+        if (row < M && threadIdx.x + t * BLOCK_DIM < N) {
+            As[threadIdx.y][threadIdx.x] = A[row * N + threadIdx.x + t * BLOCK_DIM];
         } else {
             As[threadIdx.y][threadIdx.x] = 0.0f;
         }
 
-        if (col < matrix_size && threadIdx.y + m * BLOCK_DIM < matrix_size) {
-            Bs[threadIdx.y][threadIdx.x] = B[(threadIdx.y + m * BLOCK_DIM) * matrix_size + col];
+        if (col < P && threadIdx.y + t * BLOCK_DIM < N) {
+            Bs[threadIdx.y][threadIdx.x] = B[(threadIdx.y + t * BLOCK_DIM) * P + col];
         } else {
             Bs[threadIdx.y][threadIdx.x] = 0.0f;
         }
@@ -54,8 +54,8 @@ void sharedMatrixMultiplication(float* A, float* B, float* C, int matrix_size) {
         __syncthreads();
     }
 
-    if (row < matrix_size && col < matrix_size) {
-        C[row * matrix_size + col] = acc;
+    if (row < M && col < P) {
+        C[row * P + col] = acc;
     }
 }
 
