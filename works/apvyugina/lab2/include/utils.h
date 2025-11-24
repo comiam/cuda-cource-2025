@@ -49,7 +49,7 @@ vector<T> flattenMatrix(const vector<vector<T>>& mat) {
 }
 
 template<typename T>
-void printMatrix(const vector<vector<T>>& matrix, int precision = 4) {
+void printMatrix(const vector<vector<T>>& matrix, int precision = 8) {
     cout.precision(precision);
     for (const auto& row : matrix) {
         for (const auto& value : row) {
@@ -58,5 +58,15 @@ void printMatrix(const vector<vector<T>>& matrix, int precision = 4) {
         cout << "\n";
     }
 }
+
+template<typename T>
+void printRow(const vector<T>& matrix, int precision = 4) {
+    cout.precision(precision);
+    for (const auto& value : matrix) {
+        cout << fixed << value << "\t";
+    }
+    cout << "\n";
+}
+
 
 #endif

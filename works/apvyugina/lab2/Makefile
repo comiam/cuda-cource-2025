@@ -1,9 +1,9 @@
-EIGEN_INCLUDE_DIR=/home/anastasia/DEV/cpp_libs/eigen-5.0.0/
+EIGEN_INCLUDE_DIR=/home/jovyan/workspace/eigen-5.0.0/
 CXXFLAGS= -Wall -std=c++17 -O2
 
 build_cpu:
 	mkdir -p build
-	g++ $(CXXFLAGS) src/cpu_multiplication.cpp -o build/cpu_multiplication -I include/ -I $(EIGEN_INCLUDE_DIR)
+	g++ $(CXXFLAGS) src/cpu_multiplication.cpp -o build/cpu_multiplication -I include/ -I $(EIGEN_INCLUDE_DIR) -pthread
 
 build_cuda:
 	mkdir -p build

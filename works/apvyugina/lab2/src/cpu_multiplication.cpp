@@ -16,20 +16,20 @@ int main(int argc, char* argv[]) {
 
     init_random_generator();
 
-    auto A = generateMatrix<double>(M, N);
-    auto B = generateMatrix<double>(N, P);
+    auto A = generateMatrix<float>(M, N);
+    auto B = generateMatrix<float>(N, P);
     
     cout << "CPU" << endl;
-    vector<vector<double>> res_simple(M, vector<double>(P));
-    double elapsed = simple_multiplication<double>(A, B, res_simple, M, N, P);
+    vector<vector<float>> res_simple(M, vector<float>(P));
+    double elapsed = simple_multiplication<float>(A, B, res_simple, M, N, P);
     cout << "Простое умножение заняло: " << elapsed << " секунд.\n";
     
-    vector<vector<double>> res_eigen(M, vector<double>(P));
-    double elapsed2 = eigen_multiplication<double>(A, B, res_eigen);
+    vector<vector<float>> res_eigen(M, vector<float>(P));
+    double elapsed2 = eigen_multiplication<float>(A, B, res_eigen);
     cout << "Умножение через Eigen заняло: " << elapsed2  << " секунд.\n";
 
-    vector<vector<double>> res_threaded(M, vector<double>(P));
-    double elapsed3 = threaded_multiplication<double>(A, B, res_threaded, M, N, P);
+    vector<vector<float>> res_threaded(M, vector<float>(P));
+    double elapsed3 = threaded_multiplication<float>(A, B, res_threaded, M, N, P);
     cout << "Многопоточное умножение заняло: " << elapsed3 << " секунд.\n";
 
     bool areEqual1 = compareMatrices(res_simple, res_threaded);
