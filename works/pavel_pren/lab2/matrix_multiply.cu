@@ -2,8 +2,13 @@
 #include <stdlib.h>
 #include <cuda_runtime.h>
 #include <time.h>
+#include <thread>
+#include <vector>
+#include <mutex>
 
 #define TILE_SIZE 16
+
+std::mutex output_mutex;
 
 void matrixMultiplyCPU(float* A, float* B, float* C, int M, int N, int K) {
     // просто считаем матрицы на ЦП
@@ -99,91 +104,9 @@ double getTime() {
     return (double)clock() / CLOCKS_PER_SEC;
 }
 
-void runBenchmark2(int M, int N, int K, float* h_A, float* h_B, float* h_C_cpu, 
-                   float* h_C_gpu_basic, float* h_C_gpu_tiled, 
-                   float* d_A, float* d_B, float* d_C,
-                   cudaEvent_t start, cudaEvent_t stop) {
-    printf("\n%dx%d × %dx%d matrices\n", M, N, N, K);
-    fflush(stdout);
-    
-    size_t bytesA = M * N * sizeof(float);
-    size_t bytesB = N * K * sizeof(float);
-    size_t bytesC = M * K * sizeof(float);
-    
-    srand(42);
-    initMatrix(h_A, M, N);
-    initMatrix(h_B, N, K);
-    
-    printf("CPU");
-    fflush(stdout);
-    double startCPU = getTime();
-    matrixMultiplyCPU(h_A, h_B, h_C_cpu, M, N, K);
-    double endCPU = getTime();
-    double timeCPU = endCPU - startCPU;
-    printf("Time: %.4f sec\n", timeCPU);
-    
-    printf("GPU basic");
-    fflush(stdout);
-    dim3 blockSize(16, 16);
-    dim3 gridSize((K + blockSize.x - 1) / blockSize.x, (M + blockSize.y - 1) / blockSize.y);
-    
-    cudaMemcpy(d_A, h_A, bytesA, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_B, h_B, bytesB, cudaMemcpyHostToDevice);
-    
-    cudaEventRecord(start);
-    matrixMultiplyBase<<<gridSize, blockSize>>>(d_A, d_B, d_C, M, N, K);
-    cudaDeviceSynchronize();
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    
-    float timeGpuBasic = 0;
-    cudaEventElapsedTime(&timeGpuBasic, start, stop);
-    timeGpuBasic /= 1000.0f;
-    
-    cudaMemcpy(h_C_gpu_basic, d_C, bytesC, cudaMemcpyDeviceToHost);
-    printf("Time: %.4f sec, ", timeGpuBasic);
-    
-    if (verifyResult(h_C_cpu, h_C_gpu_basic, M * K)) {
-        printf("result correct\n");
-    } else {
-        printf("result incorrect!\n");
-    }
-    
-    printf("GPU with tiling + shared memory");
-    fflush(stdout);
-    
-    cudaEventRecord(start);
-    matrixMultiplyTiled<<<gridSize, blockSize>>>(d_A, d_B, d_C, M, N, K);
-    cudaDeviceSynchronize();
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    
-    float timeGpuTiled = 0;
-    cudaEventElapsedTime(&timeGpuTiled, start, stop);
-    timeGpuTiled /= 1000.0f;
-    
-    cudaMemcpy(h_C_gpu_tiled, d_C, bytesC, cudaMemcpyDeviceToHost);
-    printf("Time: %.4f sec, ", timeGpuTiled);
-    
-    if (verifyResult(h_C_cpu, h_C_gpu_tiled, M * K)) {
-        printf("result correct\n");
-    } else {
-        printf("result incorrect!\n");
-    }
-    
-    printf("Speedup (basic vs CPU): %.2fx\n", timeCPU / timeGpuBasic);
-    printf("Speedup (tiled vs CPU): %.2fx\n", timeCPU / timeGpuTiled);
-    printf("Speedup (tiled vs basic): %.2fx\n", timeGpuBasic / timeGpuTiled);
-    
-    fflush(stdout);
-}
-
 void runBenchmark(int N, float* h_A, float* h_B, float* h_C_cpu, float* h_C_gpu_basic, 
                   float* h_C_gpu_tiled, float* d_A, float* d_B, float* d_C,
                   cudaEvent_t start, cudaEvent_t stop) {
-    printf("\n%dx%d matrices\n", N, N);
-    fflush(stdout);
-    
     size_t bytesA = N * N * sizeof(float);
     size_t bytesB = N * N * sizeof(float);
     size_t bytesC = N * N * sizeof(float);
@@ -192,16 +115,11 @@ void runBenchmark(int N, float* h_A, float* h_B, float* h_C_cpu, float* h_C_gpu_
     initMatrix(h_A, N, N);
     initMatrix(h_B, N, N);
     
-    printf("CPU");
-    fflush(stdout);
     double startCPU = getTime();
     matrixMultiplyCPU(h_A, h_B, h_C_cpu, N, N, N);
     double endCPU = getTime();
     double timeCPU = endCPU - startCPU;
-    printf("Time: %.4f sec\n", timeCPU);
     
-    printf("GPU basic");
-    fflush(stdout);
     dim3 blockSize(16, 16);
     dim3 gridSize((N + blockSize.x - 1) / blockSize.x, (N + blockSize.y - 1) / blockSize.y);
     
@@ -219,16 +137,7 @@ void runBenchmark(int N, float* h_A, float* h_B, float* h_C_cpu, float* h_C_gpu_
     timeGpuBasic /= 1000.0f;
     
     cudaMemcpy(h_C_gpu_basic, d_C, bytesC, cudaMemcpyDeviceToHost);
-    printf("Time: %.4f sec, ", timeGpuBasic);
-    
-    if (verifyResult(h_C_cpu, h_C_gpu_basic, N * N)) {
-        printf("result correct\n");
-    } else {
-        printf("result incorrect!\n");
-    }
-    
-    printf("GPU with tiling + shared memory");
-    fflush(stdout);
+    bool basicCorrect = verifyResult(h_C_cpu, h_C_gpu_basic, N * N);
     
     cudaEventRecord(start);
     matrixMultiplyTiled<<<gridSize, blockSize>>>(d_A, d_B, d_C, N, N, N);
@@ -241,26 +150,25 @@ void runBenchmark(int N, float* h_A, float* h_B, float* h_C_cpu, float* h_C_gpu_
     timeGpuTiled /= 1000.0f;
     
     cudaMemcpy(h_C_gpu_tiled, d_C, bytesC, cudaMemcpyDeviceToHost);
-    printf("Time: %.4f sec, ", timeGpuTiled);
+    bool tiledCorrect = verifyResult(h_C_cpu, h_C_gpu_tiled, N * N);
     
-    if (verifyResult(h_C_cpu, h_C_gpu_tiled, N * N)) {
-        printf("result correct\n");
-    } else {
-        printf("result incorrect!\n");
-    }
-    
+    // Синхронизированный вывод
+    std::lock_guard<std::mutex> lock(output_mutex);
+    printf("\n%dx%d matrices\n", N, N);
+    printf("CPU Time: %.4f sec\n", timeCPU);
+    printf("GPU basic Time: %.4f sec, result %s\n", timeGpuBasic, basicCorrect ? "correct" : "incorrect!");
+    printf("GPU with tiling + shared memory Time: %.4f sec, result %s\n", timeGpuTiled, tiledCorrect ? "correct" : "incorrect!");
     printf("Speedup (basic vs CPU): %.2fx\n", timeCPU / timeGpuBasic);
     printf("Speedup (tiled vs CPU): %.2fx\n", timeCPU / timeGpuTiled);
     printf("Speedup (tiled vs basic): %.2fx\n", timeGpuBasic / timeGpuTiled);
-    
     fflush(stdout);
 }
 
-int main() {
-    fflush(stdout);
-    
+// Обёртка для runBenchmark в потоке
+void threadRunBenchmark(int N) {
     int maxN = 4096;
     size_t maxBytes = maxN * maxN * sizeof(float);
+    
     float* h_A = (float*)malloc(maxBytes);
     float* h_B = (float*)malloc(maxBytes);
     float* h_C_cpu = (float*)malloc(maxBytes);
@@ -276,28 +184,9 @@ int main() {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     
-    runBenchmark(32, h_A, h_B, h_C_cpu, h_C_gpu_basic, h_C_gpu_tiled,
+    runBenchmark(N, h_A, h_B, h_C_cpu, h_C_gpu_basic, h_C_gpu_tiled,
                  d_A, d_B, d_C, start, stop);
     
-    runBenchmark(128, h_A, h_B, h_C_cpu, h_C_gpu_basic, h_C_gpu_tiled,
-                 d_A, d_B, d_C, start, stop);
-    
-    runBenchmark(512, h_A, h_B, h_C_cpu, h_C_gpu_basic, h_C_gpu_tiled,
-                 d_A, d_B, d_C, start, stop);
-    
-    runBenchmark(1024, h_A, h_B, h_C_cpu, h_C_gpu_basic, h_C_gpu_tiled,
-                 d_A, d_B, d_C, start, stop);
-    
-    runBenchmark(2048, h_A, h_B, h_C_cpu, h_C_gpu_basic, h_C_gpu_tiled,
-                 d_A, d_B, d_C, start, stop);
-    
-    runBenchmark(4096, h_A, h_B, h_C_cpu, h_C_gpu_basic, h_C_gpu_tiled,
-                 d_A, d_B, d_C, start, stop);
-    
-    runBenchmark2(128, 256, 128, h_A, h_B, h_C_cpu, h_C_gpu_basic, h_C_gpu_tiled,
-                  d_A, d_B, d_C, start, stop);
-    
-    // Освобождаем память
     cudaFree(d_A);
     cudaFree(d_B);
     cudaFree(d_C);
@@ -309,6 +198,115 @@ int main() {
     free(h_C_cpu);
     free(h_C_gpu_basic);
     free(h_C_gpu_tiled);
+}
+
+// Обёртка для прямоугольных матриц в потоке
+void threadRunBenchmark2(int M, int N, int K) {
+    int maxN = 4096;
+    size_t maxBytes = maxN * maxN * sizeof(float);
+    
+    float* h_A = (float*)malloc(maxBytes);
+    float* h_B = (float*)malloc(maxBytes);
+    float* h_C_cpu = (float*)malloc(maxBytes);
+    float* h_C_gpu_basic = (float*)malloc(maxBytes);
+    float* h_C_gpu_tiled = (float*)malloc(maxBytes);
+    
+    float *d_A, *d_B, *d_C;
+    cudaMalloc(&d_A, maxBytes);
+    cudaMalloc(&d_B, maxBytes);
+    cudaMalloc(&d_C, maxBytes);
+    
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    
+    size_t bytesA = M * N * sizeof(float);
+    size_t bytesB = N * K * sizeof(float);
+    size_t bytesC = M * K * sizeof(float);
+    
+    srand(42);
+    initMatrix(h_A, M, N);
+    initMatrix(h_B, N, K);
+    
+    double startCPU = getTime();
+    matrixMultiplyCPU(h_A, h_B, h_C_cpu, M, N, K);
+    double endCPU = getTime();
+    double timeCPU = endCPU - startCPU;
+    
+    dim3 blockSize(16, 16);
+    dim3 gridSize((K + blockSize.x - 1) / blockSize.x, (M + blockSize.y - 1) / blockSize.y);
+    
+    cudaMemcpy(d_A, h_A, bytesA, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, h_B, bytesB, cudaMemcpyHostToDevice);
+    
+    cudaEventRecord(start);
+    matrixMultiplyBase<<<gridSize, blockSize>>>(d_A, d_B, d_C, M, N, K);
+    cudaDeviceSynchronize();
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    
+    float timeGpuBasic = 0;
+    cudaEventElapsedTime(&timeGpuBasic, start, stop);
+    timeGpuBasic /= 1000.0f;
+    
+    cudaMemcpy(h_C_gpu_basic, d_C, bytesC, cudaMemcpyDeviceToHost);
+    bool basicCorrect = verifyResult(h_C_cpu, h_C_gpu_basic, M * K);
+    
+    cudaEventRecord(start);
+    matrixMultiplyTiled<<<gridSize, blockSize>>>(d_A, d_B, d_C, M, N, K);
+    cudaDeviceSynchronize();
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    
+    float timeGpuTiled = 0;
+    cudaEventElapsedTime(&timeGpuTiled, start, stop);
+    timeGpuTiled /= 1000.0f;
+    
+    cudaMemcpy(h_C_gpu_tiled, d_C, bytesC, cudaMemcpyDeviceToHost);
+    bool tiledCorrect = verifyResult(h_C_cpu, h_C_gpu_tiled, M * K);
+    
+    // Синхронизированный вывод
+    std::lock_guard<std::mutex> lock(output_mutex);
+    printf("\n%dx%d × %dx%d matrices\n", M, N, N, K);
+    printf("CPU Time: %.4f sec\n", timeCPU);
+    printf("GPU basic Time: %.4f sec, result %s\n", timeGpuBasic, basicCorrect ? "correct" : "incorrect!");
+    printf("GPU with tiling + shared memory Time: %.4f sec, result %s\n", timeGpuTiled, tiledCorrect ? "correct" : "incorrect!");
+    printf("Speedup (basic vs CPU): %.2fx\n", timeCPU / timeGpuBasic);
+    printf("Speedup (tiled vs CPU): %.2fx\n", timeCPU / timeGpuTiled);
+    printf("Speedup (tiled vs basic): %.2fx\n", timeGpuBasic / timeGpuTiled);
+    fflush(stdout);
+    
+    cudaFree(d_A);
+    cudaFree(d_B);
+    cudaFree(d_C);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    
+    free(h_A);
+    free(h_B);
+    free(h_C_cpu);
+    free(h_C_gpu_basic);
+    free(h_C_gpu_tiled);
+}
+
+int main() {
+    fflush(stdout);
+    
+    std::vector<std::thread> threads;
+    
+    // Запускаем каждый бенчмарк в отдельном потоке
+    threads.push_back(std::thread(threadRunBenchmark, 32));
+    threads.push_back(std::thread(threadRunBenchmark, 128));
+    threads.push_back(std::thread(threadRunBenchmark, 512));
+    threads.push_back(std::thread(threadRunBenchmark, 1024));
+    threads.push_back(std::thread(threadRunBenchmark, 2048));
+    threads.push_back(std::thread(threadRunBenchmark, 4096));
+    threads.push_back(std::thread(threadRunBenchmark2, 128, 256, 128));
+    
+    // Ждём завершения всех потоков
+    for (auto& t : threads) {
+        t.join();
+    }
 
     fflush(stdout);
     return 0;
