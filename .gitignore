@@ -252,3 +252,6 @@ Desktop.ini
 *.prof
 *.csv
 nsight_results/
+
+
+data/
