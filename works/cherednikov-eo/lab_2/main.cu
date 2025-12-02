@@ -102,125 +102,164 @@ __global__ void gpu_optimised_mm(const int *A, const int *B, int *C, int m, int 
     }
 }
 
+void fill_matrix_manual(int* M, int rows, int cols) {
+    printf("Заполнение матрицы вручную (%dx%d):\n", rows, cols);
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            printf("[%d][%d] = ", i, j);
+            std::cin >> M[i * cols + j];
+        }
+    }
+}
+
+
+void print_matrix(const int* M, int rows, int cols, const char* name) {
+    printf("Matrix %s (%dx%d):\n", name, rows, cols);
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            printf("%5d ", M[i * cols + j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
 
 int main() {
     int m = 32;
-	int n = 48;
+    int n = 48;
     int k = 32;
 
-	srand(3333);
+    srand(3333);
 
-	// Аллоцируем память для матриц на Хосте и для результат вычислений на ЦПУ
-    int *h_a, *h_b, *h_c, *h_cc;
-    cudaMallocHost((void **) &h_a, sizeof(int)*m*n);
-    cudaMallocHost((void **) &h_b, sizeof(int)*n*k);
-    cudaMallocHost((void **) &h_c, sizeof(int)*m*k);
-    cudaMallocHost((void **) &h_cc, sizeof(int)*m*k);
+    int *h_a, *h_b, *h_c_naive, *h_c_opt, *h_cc;
+    cudaMallocHost(&h_a, sizeof(int)*m*n);
+    cudaMallocHost(&h_b, sizeof(int)*n*k);
+    cudaMallocHost(&h_c_naive, sizeof(int)*m*k);
+    cudaMallocHost(&h_c_opt, sizeof(int)*m*k);
+    cudaMallocHost(&h_cc, sizeof(int)*m*k);
 
-	// random initialize matrix A
-    for (int i = 0; i < m; ++i) {
-        for (int j = 0; j < n; ++j) {
-            h_a[i * n + j] = rand() % 1024;
-        }
-    }
+    // Рандомно заполняем A и B
+    for (int i = 0; i < m*n; i++) h_a[i] = rand() % 1024;
+    for (int i = 0; i < n*k; i++) h_b[i] = rand() % 1024;
 
-	// random initialize matrix B
-    for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < k; ++j) {
-            h_b[i * k + j] = rand() % 1024;
-        }
-    }
+	// Ручное заполнение матриц
+	// fill_matrix_manual(h_a, m, n);
+	// fill_matrix_manual(h_b, n, k);
 
-	float gpu_elapsed_time_ms, cpu_elapsed_time_ms, gpu_opt_time_ms;
+    // Device memory
+    int *d_a, *d_b, *d_c_naive, *d_c_opt;
+    cudaMalloc(&d_a, sizeof(int)*m*n);
+    cudaMalloc(&d_b, sizeof(int)*n*k);
+    cudaMalloc(&d_c_naive, sizeof(int)*m*k);
+    cudaMalloc(&d_c_opt, sizeof(int)*m*k);
 
-    // Заводим ивенты для расчётов по времени
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    // Аллоцируем память на device
-    int *d_a, *d_b, *d_c;
-    cudaMalloc((void **) &d_a, sizeof(int)*m*n);
-    cudaMalloc((void **) &d_b, sizeof(int)*n*k);
-    cudaMalloc((void **) &d_c, sizeof(int)*m*k);
-
-    // Передаём матрицы на device
     cudaMemcpy(d_a, h_a, sizeof(int)*m*n, cudaMemcpyHostToDevice);
     cudaMemcpy(d_b, h_b, sizeof(int)*n*k, cudaMemcpyHostToDevice);
+
 
     unsigned int grid_rows = (m + TILE - 1) / TILE;
     unsigned int grid_cols = (k + TILE - 1) / TILE;
     dim3 dimGrid(grid_cols, grid_rows);
     dim3 dimBlock(TILE, TILE);
 
-	cudaEventRecord(start, 0);
-	gpu_naive_mm<<<dimGrid, dimBlock>>>(d_a, d_b, d_c, m, n, k);
+    // Запускаем тесты параллельно
+    cudaStream_t stream1, stream2;
+    cudaStreamCreate(&stream1);
+    cudaStreamCreate(&stream2);
 
-	cudaMemcpy(h_c, d_c, sizeof(int)*m*k, cudaMemcpyDeviceToHost);
-    CUDA_CHECK(cudaThreadSynchronize());
+    cudaEvent_t n_start, n_stop, o_start, o_stop;
+    cudaEventCreate(&n_start);
+    cudaEventCreate(&n_stop);
+    cudaEventCreate(&o_start);
+    cudaEventCreate(&o_stop);
 
-	//считаем время
-	cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
+    // Наивное GPU умножение
+    cudaEventRecord(n_start, stream1);
+    gpu_naive_mm<<<dimGrid, dimBlock, 0, stream1>>>(
+        d_a, d_b, d_c_naive, m, n, k
+    );
+    cudaEventRecord(n_stop, stream1);
 
-	cudaEventElapsedTime(&gpu_elapsed_time_ms, start, stop);
-    printf("Time elapsed on matrix multiplication of %dx%d . %dx%d on GPU: %f ms.\n\n", m, n, n, k, gpu_elapsed_time_ms);
+    // Оптимизированное GPU умножение
+    cudaEventRecord(o_start, stream2);
+    gpu_optimised_mm<<<dimGrid, dimBlock, 0, stream2>>>(
+        d_a, d_b, d_c_opt, m, n, k
+    );
+    cudaEventRecord(o_stop, stream2);
 
-	//Считаем для CPU
 
-	cudaEventRecord(start, 0);
+    cudaEventSynchronize(n_stop);
+    cudaEventSynchronize(o_stop);
 
+
+    cudaMemcpyAsync(h_c_naive, d_c_naive, sizeof(int)*m*k, cudaMemcpyDeviceToHost, stream1);
+    cudaMemcpyAsync(h_c_opt,   d_c_opt,   sizeof(int)*m*k, cudaMemcpyDeviceToHost, stream2);
+
+    cudaStreamSynchronize(stream1);
+    cudaStreamSynchronize(stream2);
+
+    float naive_ms = 0, opt_ms = 0;
+    cudaEventElapsedTime(&naive_ms, n_start, n_stop);
+    cudaEventElapsedTime(&opt_ms, o_start, o_stop);
+
+    printf("GPU naive      time: %.3f ms\n", naive_ms);
+    printf("GPU optimized  time: %.3f ms\n", opt_ms);
+
+    // CPU замер
+    cudaEvent_t c_start, c_stop;
+    cudaEventCreate(&c_start);
+    cudaEventCreate(&c_stop);
+
+    cudaEventRecord(c_start);
     cpu_matmul(h_a, h_b, h_cc, m, n, k);
+    cudaEventRecord(c_stop);
+    cudaEventSynchronize(c_stop);
 
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&cpu_elapsed_time_ms, start, stop);
-    printf("Time elapsed on matrix multiplication of %dx%d . %dx%d on CPU: %f ms.\n\n", m, n, n, k, cpu_elapsed_time_ms);
+    float cpu_ms;
+    cudaEventElapsedTime(&cpu_ms, c_start, c_stop);
+    printf("CPU            time: %.3f ms\n", cpu_ms);
 
-	//Пробуем оптимизированную версию
-	cudaEventRecord(start, 0);
-
-	gpu_optimised_mm<<<dimGrid, dimBlock>>>(d_a, d_b, d_c, m, n, k);
-
-	cudaMemcpy(h_c, d_c, sizeof(int)*m*k, cudaMemcpyDeviceToHost);
-	CUDA_CHECK(cudaThreadSynchronize());
-	cudaEventRecord(stop, 0);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&gpu_opt_time_ms, start, stop);
-	printf("Time elapsed on OPTIMIZED GPU matrix multiplication (%dx%d . %dx%d): %f ms.\n\n",
-       	m, n, n, k, gpu_opt_time_ms);
-
-
-	int all_ok = 1;
-    for (int i = 0; i < m; ++i)
-    {
-        for (int j = 0; j < k; ++j)
-        {
-            //printf("[%d][%d]:%d == [%d][%d]:%d, ", i, j, h_cc[i*k + j], i, j, h_c[i*k + j]);
-            if(h_cc[i*k + j] != h_c[i*k + j])
-            {
-                all_ok = 0;
-            }
+    // Проверка CPU перемнождения с оптимизированным и наивными перемножениями
+    int ok = 1;
+    for (int i = 0; i < m*k; ++i) {
+        if (h_cc[i] != h_c_opt[i]) {
+            ok = 0;
+            break;
         }
-        //printf("\n");
     }
 
-    // roughly compute speedup
-    if(all_ok)
-    {
-        printf("all results are correct!!!, speedup = %f\n", cpu_elapsed_time_ms / gpu_elapsed_time_ms);
+	for (int i = 0; i < m*k; ++i) {
+        if (h_cc[i] != h_c_naive[i]) {
+            ok = 0;
+            break;
+        }
     }
+
+    if (ok)
+        printf("Всё пральна. GPU ускорение = %.3f\n", cpu_ms - opt_ms);
     else
-    {
-        printf("incorrect results\n");
-    }
+        printf("Что-то не так!\n");
 
-	cudaFree(d_a);
+    // cleanup
+    cudaFree(d_a);
     cudaFree(d_b);
-    cudaFree(d_c);
+    cudaFree(d_c_naive);
+    cudaFree(d_c_opt);
+
     cudaFreeHost(h_a);
     cudaFreeHost(h_b);
-    cudaFreeHost(h_c);
+    cudaFreeHost(h_c_naive);
+    cudaFreeHost(h_c_opt);
     cudaFreeHost(h_cc);
+
+    cudaStreamDestroy(stream1);
+    cudaStreamDestroy(stream2);
+
+    cudaEventDestroy(n_start);
+    cudaEventDestroy(n_stop);
+    cudaEventDestroy(o_start);
+    cudaEventDestroy(o_stop);
+
     return 0;
 }
