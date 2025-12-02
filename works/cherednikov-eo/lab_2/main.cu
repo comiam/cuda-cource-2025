@@ -190,15 +190,15 @@ int main() {
     cudaEventRecord(o_stop, stream2);
 
 
-    cudaEventSynchronize(n_stop);
-    cudaEventSynchronize(o_stop);
+    CUDA_CHECK(cudaEventSynchronize(n_stop));
+    CUDA_CHECK(cudaEventSynchronize(o_stop));
 
 
     cudaMemcpyAsync(h_c_naive, d_c_naive, sizeof(int)*m*k, cudaMemcpyDeviceToHost, stream1);
     cudaMemcpyAsync(h_c_opt,   d_c_opt,   sizeof(int)*m*k, cudaMemcpyDeviceToHost, stream2);
 
-    cudaStreamSynchronize(stream1);
-    cudaStreamSynchronize(stream2);
+    CUDA_CHECK(cudaStreamSynchronize(stream1));
+    CUDA_CHECK(cudaStreamSynchronize(stream2));
 
     float naive_ms = 0, opt_ms = 0;
     cudaEventElapsedTime(&naive_ms, n_start, n_stop);
