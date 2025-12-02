@@ -4,6 +4,7 @@
 #include <chrono>
 #include <random>
 #include <iostream>
+#include <chrono>
 
 
 #include <cuda_runtime.h>
@@ -207,20 +208,15 @@ int main() {
     printf("GPU optimized  time: %.3f ms\n", opt_ms);
 
     // CPU замер
-    cudaEvent_t c_start, c_stop;
-    cudaEventCreate(&c_start);
-    cudaEventCreate(&c_stop);
 
-    cudaEventRecord(c_start);
+    auto start = std::chrono::high_resolution_clock::now();
     cpu_matmul(h_a, h_b, h_cc, m, n, k);
-    cudaEventRecord(c_stop);
-    cudaEventSynchronize(c_stop);
+	auto stop = std::chrono::high_resolution_clock::now();
 
-    float cpu_ms;
-    cudaEventElapsedTime(&cpu_ms, c_start, c_stop);
-    printf("CPU            time: %.3f ms\n", cpu_ms);
+	std::chrono::duration<double, std::milli> ms = stop - start;
+    printf("CPU time: %.3f ms\n", ms.count());
 
-    // Проверка CPU перемнождения с оптимизированным и наивными перемножениями
+    // Проверка CPU перемножения с оптимизированным и наивными перемножениями
     int ok = 1;
     for (int i = 0; i < m*k; ++i) {
         if (h_cc[i] != h_c_opt[i]) {
@@ -237,9 +233,13 @@ int main() {
     }
 
     if (ok)
-        printf("Всё пральна. GPU ускорение = %.3f\n", cpu_ms - opt_ms);
+        printf("Results are correct. GPU speedup = %.3f\n", naive_ms - opt_ms);
     else
-        printf("Что-то не так!\n");
+        printf("Incorrect results!\n");
+
+	//print_matrix(h_a, m, n, "A");
+    //print_matrix(h_b, n, k, "B");
+    //print_matrix(h_cc, m, k, "C");
 
     // cleanup
     cudaFree(d_a);
