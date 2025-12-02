@@ -49,7 +49,7 @@ __global__ void gpu_naive_mm(int *A,int *B, int *C, int m, int n, int k)
 
 
 #ifndef TILE
-#define TILE 32
+#define TILE 16
 #endif
 
 // Оптимизированная версия перемножения матриц
@@ -62,26 +62,26 @@ __global__ void gpu_optimised_mm(const int *A, const int *B, int *C, int m, int 
     int bx = blockIdx.x; int by = blockIdx.y;
     int tx = threadIdx.x; int ty = threadIdx.y;
 
-    int row = by * TILE + ty;   // global row index in C
-    int col = bx * TILE + tx;   // global col index in C
+    int row = by * TILE + ty;   // Глобальный индекс строки для матрицы C
+    int col = bx * TILE + tx;   // Глобальный индекс колонки для матрицы C
 
     int acc = 0;
 
-    // Number of tiles to cover the 'n' dimension (A columns / B rows)
+    // Количество Тайлов для покрытия "среднего" измерения (n)
     int numTiles = (n + TILE - 1) / TILE;
 
     for (int t = 0; t < numTiles; ++t) {
-        // Global column index for A to load and global row index for B to load
-        int a_col = t * TILE + tx;       // column in A (and index along n)
-        int b_row = t * TILE + ty;       // row in B
+        // Глобальный индекс кколонки дла А и глобальный индекс колонки для B
+        int a_col = t * TILE + tx;
+        int b_row = t * TILE + ty;
 
-        // Load tile element from A: A[row, a_col]
+        // Загружаем элемент Тайла из A: A[row, a_col]
         if (row < m && a_col < n)
             tile_a[ty][tx] = A[row * n + a_col];
         else
             tile_a[ty][tx] = 0;
 
-        // Load tile element from B: B[b_row, col]
+        // Загружаем элемент Тайла из B: B[b_row, col]
         if (b_row < n && col < k)
             tile_b[ty][tx] = B[b_row * k + col];
         else
@@ -89,7 +89,7 @@ __global__ void gpu_optimised_mm(const int *A, const int *B, int *C, int m, int 
 
         __syncthreads();
 
-        // Multiply the two TILE-wide vectors
+        // Перемножаем два виктора шириной с Тайл
         #pragma unroll
         for (int j = 0; j < TILE; ++j) {
             acc += tile_a[ty][j] * tile_b[j][tx];
@@ -127,9 +127,9 @@ void print_matrix(const int* M, int rows, int cols, const char* name) {
 
 
 int main() {
-    int m = 32;
-    int n = 48;
-    int k = 32;
+    int m = 48;
+    int n = 32;
+    int k = 48;
 
     srand(3333);
 
@@ -233,7 +233,7 @@ int main() {
     }
 
     if (ok)
-        printf("Results are correct. GPU speedup = %.3f\n", naive_ms - opt_ms);
+        printf("Results are correct. GPU speedup = %.3f\n", naive_ms / opt_ms);
     else
         printf("Incorrect results!\n");
 
