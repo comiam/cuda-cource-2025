@@ -1,15 +1,6 @@
 // ============================================
 // Sobel Filter with CUDA + OpenCV
 // ============================================
-// Компиляция:
-//   nvcc main_opencv.cpp sobel.cu -o sobel_filter.exe ^
-//        -I "C:\dev\vcpkg\installed\x64-windows\include\opencv4" ^
-//        -I "C:\dev\vcpkg\installed\x64-windows\include" ^
-//        -L "C:\dev\vcpkg\installed\x64-windows\lib" ^
-//        -lopencv_core4 -lopencv_imgcodecs4 -lopencv_imgproc4
-//
-// Запуск: ./sobel_filter.exe [input.jpg] [output.jpg]
-// ============================================
 
 #include <iostream>
 #include <string>
@@ -18,20 +9,19 @@
 // CUDA wrapper из sobel.cu
 extern "C" int run_sobel_wrapper(const unsigned char* h_input, unsigned char* h_output, int width, int height);
 
-const std::string IMAGES_DIR = "images/";
-const std::string DEFAULT_INPUT = "test_input.jpg";
-const std::string DEFAULT_OUTPUT = "out_sobel.jpg";
+const std::string DEFAULT_INPUT = "images/test_input.jpg";
+const std::string DEFAULT_OUTPUT = "images/out_sobel.jpg";
 
 int main(int argc, char* argv[]) {
     
-    std::string inputFile = IMAGES_DIR + DEFAULT_INPUT;
-    std::string outputFile = IMAGES_DIR + DEFAULT_OUTPUT;
+    std::string inputFile = DEFAULT_INPUT;
+    std::string outputFile = DEFAULT_OUTPUT;
     
     if (argc >= 2) {
-        inputFile = IMAGES_DIR + std::string(argv[1]);
+        inputFile = argv[1];
     }
     if (argc >= 3) {
-        outputFile = IMAGES_DIR + std::string(argv[2]);
+        outputFile = argv[2];
     }
 
 

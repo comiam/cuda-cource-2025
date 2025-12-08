@@ -1,7 +1,6 @@
 #include <cuda_runtime.h>
 #include <math.h>
-#include <iostream>
-
+#include <stdio.h>
 
 #define TILE_SIZE 16                     
 #define BLOCK_SIZE (TILE_SIZE + 2)        
@@ -91,12 +90,23 @@ __global__ void sobel_kernel_tiled(const unsigned char* input, unsigned char* ou
 extern "C" int run_sobel_wrapper(const unsigned char* h_input, unsigned char* h_output, int width, int height) {
     unsigned char *d_input, *d_output;
     size_t imgSize = width * height * sizeof(unsigned char);
+    cudaError_t err;
 
+    err = cudaMalloc((void**)&d_input, imgSize);
+    if (err != cudaSuccess) return 1;
 
-   
-    cudaMalloc((void**)&d_input, imgSize);
-    cudaMalloc((void**)&d_output, imgSize);
-    cudaMemcpy(d_input, h_input, imgSize, cudaMemcpyHostToDevice);
+    err = cudaMalloc((void**)&d_output, imgSize);
+    if (err != cudaSuccess) {
+        cudaFree(d_input);
+        return 1;
+    }
+
+    err = cudaMemcpy(d_input, h_input, imgSize, cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        cudaFree(d_input);
+        cudaFree(d_output);
+        return 1;
+    }
         
     dim3 blockSize(TILE_SIZE, TILE_SIZE);
     dim3 gridSize((width + TILE_SIZE - 1) / TILE_SIZE, 
@@ -105,11 +115,19 @@ extern "C" int run_sobel_wrapper(const unsigned char* h_input, unsigned char* h_
     sobel_kernel_tiled<<<gridSize, blockSize>>>(d_input, d_output, width, height);
     
     cudaDeviceSynchronize();
-    cudaGetLastError();
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        cudaFree(d_input);
+        cudaFree(d_output);
+        return 2;
+    }
 
-    cudaMemcpy(h_output, d_output, imgSize, cudaMemcpyDeviceToHost);
-   
-
+    err = cudaMemcpy(h_output, d_output, imgSize, cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        cudaFree(d_input);
+        cudaFree(d_output);
+        return 1;
+    }
    
     cudaFree(d_input);
     cudaFree(d_output);
