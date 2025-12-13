@@ -29,10 +29,10 @@ void print_matrix(const float* matrix, int rows, int cols, const char* name) {
     std::cout << name << ":\n";
     std::cout << std::fixed << std::setprecision(4);
     for (int row = 0; row < rows; ++row) {
-    for (int col = 0; col < cols; ++col) {
-    std::cout << std::setw(10) << matrix[row * cols + col] << " ";
-    }
-    std::cout << "\n";
+        for (int col = 0; col < cols; ++col) {
+            std::cout << std::setw(10) << matrix[row * cols + col] << " ";
+        }
+        std::cout << "\n";
     }
     std::cout << std::defaultfloat;
 }
@@ -52,12 +52,7 @@ void matrix_mult_cpu(const float* A, const float* B, float* C, int M, int N, int
 
 // CUDA Kernel для перемножения матриц с использованием Shared Memory
 // Использует технику тайлинга (tiling) для оптимизации доступа к памяти
-__global__ void matrix_multiplication_kernel(const float* A,
-                                             const float* B,
-                                             float* C,
-                                             int M,
-                                             int N,
-                                             int K) {
+__global__ void matrix_multiplication_kernel(const float* A, const float* B, float* C, int M, int N, int K) {
     int x = blockIdx.x * blockDim.x + threadIdx.x; // Индекс столбца
     int y = blockIdx.y * blockDim.y + threadIdx.y; // Индекс строки
     
@@ -107,103 +102,99 @@ __global__ void matrix_multiplication_kernel(const float* A,
     }
 }
 
-int main() 
-    {
-        int M = 0;
-        int K = 0;
-        int N = 0;
-        std::cout << "Enter matrix sizes M K N (A: MxK, B: KxN): ";
-        if (!(std::cin >> M >> K >> N) || M <= 0 || K <= 0 || N <= 0) {
-            std::cerr << "Invalid sizes.\n";
-            return EXIT_FAILURE;
-            
-        }
+int main() {
+    int M = 0;
+    int K = 0;
+    int N = 0;
+    std::cout << "Enter matrix sizes M K N (A: MxK, B: KxN): ";
+    if (!(std::cin >> M >> K >> N) || M <= 0 || K <= 0 || N <= 0) {
+        std::cerr << "Invalid sizes.\n";
+        return EXIT_FAILURE;
+    }
 
-        const int size_A = M * K;
-        const int size_B = K * N;
-        const int size_C = M * N;
+    const int size_A = M * K;
+    const int size_B = K * N;
+    const int size_C = M * N;
 
-        float* host_A = new float[size_A];
-        float* host_B = new float[size_B];
-        float* host_C = new float[size_C];
+    float* host_A = new float[size_A];
+    float* host_B = new float[size_B];
+    float* host_C = new float[size_C];
 
-        // Инициализация матриц случайными значениями
-        srand(time(NULL));
-        for(int i = 0; i < size_A; ++i) {
-            host_A[i] = static_cast<float>(rand()) / RAND_MAX;
-        }
-        for(int i = 0; i < size_B; ++i) {
-            host_B[i] = static_cast<float>(rand()) / RAND_MAX;
-        }
+    // Инициализация матриц случайными значениями
+    srand(time(NULL));
+    for(int i = 0; i < size_A; ++i) {
+        host_A[i] = static_cast<float>(rand()) / RAND_MAX;
+    }
+    for(int i = 0; i < size_B; ++i) {
+        host_B[i] = static_cast<float>(rand()) / RAND_MAX;
+    }
 
-        float* dev_A = nullptr;
-        float* dev_B = nullptr;
-        float* dev_C = nullptr;
-        // Выделение памяти на GPU
-        CUDA_CHECK(cudaMalloc(&dev_A, size_A * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&dev_B, size_B * sizeof(float)));
-        CUDA_CHECK(cudaMalloc(&dev_C, size_C * sizeof(float)));
+    float* dev_A = nullptr;
+    float* dev_B = nullptr;
+    float* dev_C = nullptr;
+    // Выделение памяти на GPU
+    CUDA_CHECK(cudaMalloc(&dev_A, size_A * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_B, size_B * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_C, size_C * sizeof(float)));
 
-        // Копирование данных с Host на Device
-        CUDA_CHECK(cudaMemcpy(dev_A, host_A, size_A * sizeof(float), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(dev_B, host_B, size_B * sizeof(float), cudaMemcpyHostToDevice));
+    // Копирование данных с Host на Device
+    CUDA_CHECK(cudaMemcpy(dev_A, host_A, size_A * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dev_B, host_B, size_B * sizeof(float), cudaMemcpyHostToDevice));
 
-        // Настройка сетки и блоков
-        dim3 block(BLOCK_SIZE, BLOCK_SIZE);
-        dim3 grid((N + BLOCK_SIZE - 1) / BLOCK_SIZE,
-                  (M + BLOCK_SIZE - 1) / BLOCK_SIZE);
-        
-        // Создание событий для замера времени
-        cudaEvent_t start, stop;
-        cudaEventCreate(&start);
-        cudaEventCreate(&stop);
+    // Настройка сетки и блоков
+    dim3 block(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 grid((N + BLOCK_SIZE - 1) / BLOCK_SIZE,
+              (M + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    
+    // Создание событий для замера времени
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
 
-        cudaEventRecord(start);
-        matrix_multiplication_kernel<<<grid, block>>>(dev_A, dev_B, dev_C, M, N, K);
-        cudaEventRecord(stop);
-        
-        CUDA_CHECK(cudaDeviceSynchronize());
-        CUDA_CHECK(cudaGetLastError()); // Проверка ошибок запуска ядра
+    cudaEventRecord(start);
+    matrix_multiplication_kernel<<<grid, block>>>(dev_A, dev_B, dev_C, M, N, K);
+    cudaEventRecord(stop);
+    
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaGetLastError()); // Проверка ошибок запуска ядра
 
-        float milliseconds = 0;
-        cudaEventElapsedTime(&milliseconds, start, stop);
-        std::cout << "GPU Time: " << milliseconds << " ms\n";
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    std::cout << "GPU Time: " << milliseconds << " ms\n";
 
-        // Копирование результата обратно на Host
-        CUDA_CHECK(cudaMemcpy(host_C, dev_C, size_C * sizeof(float), cudaMemcpyDeviceToHost));
+    // Копирование результата обратно на Host
+    CUDA_CHECK(cudaMemcpy(host_C, dev_C, size_C * sizeof(float), cudaMemcpyDeviceToHost));
 
-        // Проверка на CPU для матриц небольшого размера
-        if (M <= 512 && N <= 512 && K <= 512) {
-            float* cpu_C = new float[size_C];
-            auto start_cpu = std::chrono::high_resolution_clock::now();
-            matrix_mult_cpu(host_A, host_B, cpu_C, M, N, K);
-            auto end_cpu = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double, std::milli> cpu_ms = end_cpu - start_cpu;
-            std::cout << "CPU Time: " << cpu_ms.count() << " ms\n";
-            std::cout << "Speedup: " << cpu_ms.count() / milliseconds << "x\n";
+    // Проверка на CPU для матриц небольшого размера
+    if (M <= 512 && N <= 512 && K <= 512) {
+        float* cpu_C = new float[size_C];
+        auto start_cpu = std::chrono::high_resolution_clock::now();
+        matrix_mult_cpu(host_A, host_B, cpu_C, M, N, K);
+        auto end_cpu = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> cpu_ms = end_cpu - start_cpu;
+        std::cout << "CPU Time: " << cpu_ms.count() << " ms\n";
+        std::cout << "Speedup: " << cpu_ms.count() / milliseconds << "x\n";
 
-            float max_error = 0.0f;
-            for(int i=0; i<size_C; ++i) max_error = std::max(max_error, std::abs(host_C[i] - cpu_C[i]));
-            std::cout << "Max Absolute Error: " << max_error << "\n";
-            delete[] cpu_C;
-        }
+        float max_error = 0.0f;
+        for(int i=0; i<size_C; ++i) max_error = std::max(max_error, std::abs(host_C[i] - cpu_C[i]));
+        std::cout << "Max Absolute Error: " << max_error << "\n";
+        delete[] cpu_C;
+    }
 
-        // Вывод матриц только если они очень маленькие
-        if (M <= 10 && N <= 10) {
-            print_matrix(host_A, M, K, "Matrix A");
-            print_matrix(host_B, K, N, "Matrix B");
-            print_matrix(host_C, M, N, "Matrix C");
-        }
+    // Вывод матриц только если они очень маленькие
+    if (M <= 10 && N <= 10) {
+        print_matrix(host_A, M, K, "Matrix A");
+        print_matrix(host_B, K, N, "Matrix B");
+        print_matrix(host_C, M, N, "Matrix C");
+    }
 
-        // Освобождение памяти
-        CUDA_CHECK(cudaFree(dev_A));
-        CUDA_CHECK(cudaFree(dev_B));
-        CUDA_CHECK(cudaFree(dev_C));
-        delete[] host_A;
-        delete[] host_B;
-        delete[] host_C;
+    // Освобождение памяти
+    CUDA_CHECK(cudaFree(dev_A));
+    CUDA_CHECK(cudaFree(dev_B));
+    CUDA_CHECK(cudaFree(dev_C));
+    delete[] host_A;
+    delete[] host_B;
+    delete[] host_C;
 
-        return 0;
-   
+    return 0;
 }
-
