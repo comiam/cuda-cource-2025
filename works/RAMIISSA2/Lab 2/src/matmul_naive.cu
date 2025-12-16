@@ -8,13 +8,14 @@ void matmul_naive_kernel(const float* A, const float* B, float* C,
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (row >= M || col >= K) return;
-
-    float sum = 0.0f;
-    for (int k = 0; k < N; k++) {
-        sum += A[row * N + k] * B[k * K + col];
+    if (row < M && col < K) {
+        float sum = 0.0f;
+        #pragma unroll 1
+        for (int k = 0; k < N; ++k) {
+            sum += A[row * N + k] * B[k * K + col];
+        }
+        C[row * K + col] = sum;
     }
-    C[row * K + col] = sum;
 }
 
 extern "C"

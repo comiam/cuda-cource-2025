@@ -71,7 +71,10 @@ int main(int argc, char** argv) {
         std::make_tuple(128, 128, 128),
         std::make_tuple(256, 256, 256),
         std::make_tuple(512, 512, 512),
-        std::make_tuple(1024, 1024, 1024)
+        std::make_tuple(1024, 1024, 1024),
+        std::make_tuple(512, 1024, 512),
+        std::make_tuple(1024, 512, 1024),
+        std::make_tuple(512, 1024, 256)
     };
 
     // Prepare CSV
