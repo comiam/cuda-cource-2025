@@ -8,8 +8,8 @@ all: build
 
 build: $(TARGET)
 
-$(TARGET): sobel.cu
-	$(CC) $(CFLAGS) -o $(TARGET) sobel.cu
+$(TARGET): src/sobel.cu
+	$(CC) $(CFLAGS) -o $(TARGET) src/sobel.cu
 
 run: build
 	./$(TARGET)
