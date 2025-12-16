@@ -1,53 +1,66 @@
-//
-// Main program for Sobel edge detection
-//
+#include "../headers/utils.h"
+#include "../headers/error-check.cuh"
+#include <cuda_runtime.h>
+#include <iostream>
+#include <vector>
 
-#include <cstdio>
-#include <cstdlib>
-#include "../headers/image_io.h"
-#include "../headers/sobel.cuh"
+__global__ void sobel_kernel(
+    const unsigned char* input,
+    unsigned char* output,
+    unsigned width,
+    unsigned height
+);
 
 int main(int argc, char* argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input> <output>\n", argv[0]);
-        fprintf(stderr, "Supported formats: .pgm, .png, .bmp\n");
-        fprintf(stderr, "Example: %s input.png edges.bmp\n", argv[0]);
-        fprintf(stderr, "Example: %s input.pgm edges.pgm\n", argv[0]);
+    std::string input_path = argv[1];
+    std::string output_path = argv[2];
+
+    std::vector<unsigned char> h_input;
+    unsigned width, height;
+
+    if (!loadImage(input_path, h_input, width, height)) {
         return 1;
     }
 
-    const char* inputFile = argv[1];
-    const char* outputFile = argv[2];
+    size_t img_size = width * height * sizeof(unsigned char);
 
-    // Загружаем изображение (поддерживаются PGM, PNG, BMP)
-    printf("Loading image: %s\n", inputFile);
-    Image inputImg = loadImage(inputFile);
-    
-    // Выделяем память для выходного изображения
-    Image outputImg;
-    outputImg.width = inputImg.width;
-    outputImg.height = inputImg.height;
-    outputImg.data = (unsigned char*)malloc(inputImg.width * inputImg.height);
-    
-    if (!outputImg.data) {
-        fprintf(stderr, "Error: Memory allocation failed\n");
-        freeImage(inputImg);
+    unsigned char *d_input, *d_output;
+    CUDA_CHECK(cudaMalloc(&d_input, img_size));
+    CUDA_CHECK(cudaMalloc(&d_output, img_size));
+    CUDA_CHECK(cudaMemcpy(d_input, h_input.data(), img_size, cudaMemcpyHostToDevice));
+
+    dim3 blockSize(16, 16);
+    dim3 gridSize((width + blockSize.x - 1) / blockSize.x,
+                  (height + blockSize.y - 1) / blockSize.y);
+
+    cudaEvent_t start, stop;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start));
+
+    sobel_kernel<<<gridSize, blockSize>>>(d_input, d_output, width, height);
+    CUDA_CHECK(cudaGetLastError());
+
+    CUDA_CHECK(cudaEventRecord(stop));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+
+    float ms = 0;
+    CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+    std::cout << "Время выполнения Sobel: " << ms << " мс (размер: " << width << "x" << height << ")" << std::endl;
+
+    std::vector<unsigned char> h_output(width * height);
+    CUDA_CHECK(cudaMemcpy(h_output.data(), d_output, img_size, cudaMemcpyDeviceToHost));
+
+    if (!saveImage(output_path, h_output, width, height)) {
         return 1;
     }
 
-    // Применяем оператор Собеля на GPU
-    printf("Applying Sobel operator on GPU...\n");
-    applySobelGPU(inputImg.data, outputImg.data, inputImg.width, inputImg.height);
+    std::cout << "Результат сохранён в: " << output_path << std::endl;
 
-    // Сохраняем результат (формат определяется по расширению)
-    printf("Saving result: %s\n", outputFile);
-    saveImage(outputFile, outputImg);
+    CUDA_CHECK(cudaFree(d_input));
+    CUDA_CHECK(cudaFree(d_output));
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
 
-    // Освобождаем память
-    freeImage(inputImg);
-    freeImage(outputImg);
-
-    printf("Edge detection completed successfully!\n");
     return 0;
 }
-
