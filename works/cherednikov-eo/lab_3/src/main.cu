@@ -1,5 +1,5 @@
 #include "../headers/utils.h"
-#include "../headers/error-check.cuh"
+#include "../headers/error_check.cuh"
 #include <cuda_runtime.h>
 #include <iostream>
 #include <vector>

@@ -9,3 +9,5 @@ bool loadImage(const std::string& filename, std::vector<unsigned char>& image, u
 bool saveImage(const std::string& filename, const std::vector<unsigned char>& image, unsigned width, unsigned height);
 
 bool endsWith(const std::string& str, const std::string& suffix);
+
+#endif
