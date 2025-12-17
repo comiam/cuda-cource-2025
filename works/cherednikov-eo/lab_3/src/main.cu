@@ -11,7 +11,7 @@
 __global__ void sobel_filter(unsigned char* input, unsigned char* output, int width, int height) {
     __shared__ unsigned char tile_s[TILE + 2][TILE + 2];
 
-    // Локальные координаты в тайле (1-indexed для учета границ)
+    // Локальные координаты в тайле
     int thread_x = threadIdx.x + 1;
     int thread_y = threadIdx.y + 1;
     
@@ -19,88 +19,91 @@ __global__ void sobel_filter(unsigned char* input, unsigned char* output, int wi
     int x = blockIdx.x * TILE + threadIdx.x;
     int y = blockIdx.y * TILE + threadIdx.y;
 
-    // Загрузка центрального тайла
+    // Инциализирукем все элементы тайла нулями
+    tile_s[thread_y][thread_x] = 0;
+    if (threadIdx.x == 0) tile_s[thread_y][0] = 0;
+    if (threadIdx.x == TILE - 1) tile_s[thread_y][TILE + 1] = 0;
+    if (threadIdx.y == 0) tile_s[0][thread_x] = 0;
+    if (threadIdx.y == TILE - 1) tile_s[TILE + 1][thread_x] = 0;
+    if (threadIdx.x == 0 && threadIdx.y == 0) tile_s[0][0] = 0;
+    if (threadIdx.x == TILE - 1 && threadIdx.y == 0) tile_s[0][TILE + 1] = 0;
+    if (threadIdx.x == 0 && threadIdx.y == TILE - 1) tile_s[TILE + 1][0] = 0;
+    if (threadIdx.x == TILE - 1 && threadIdx.y == TILE - 1) tile_s[TILE + 1][TILE + 1] = 0;
+
+    __syncthreads();
+
+    // Загружаем цуентральный тайл
     if (x < width && y < height) {
         tile_s[thread_y][thread_x] = input[y * width + x];
-    } else {
-        tile_s[thread_y][thread_x] = 0;
     }
 
-    // Загрузка левой границы
+    // Загружаем границы
+    // Левая граница
     if (threadIdx.x == 0) {
         int apron_x = max(0, x - 1);
-        if (y < height) {
+        if (y < height && apron_x < width) {
             tile_s[thread_y][0] = input[y * width + apron_x];
-        } else {
-            tile_s[thread_y][0] = 0;
         }
     }
 
-    // Загрузка правой границы
-    if (threadIdx.x == TILE - 1 || x == width - 1) {
+    // Правая граница
+    if (threadIdx.x == TILE - 1) {
         int apron_x = min(width - 1, x + 1);
         if (y < height && apron_x < width) {
             tile_s[thread_y][TILE + 1] = input[y * width + apron_x];
-        } else {
-            tile_s[thread_y][TILE + 1] = 0;
         }
     }
 
-    // Загрузка верхней границы
+    // Верхняя грница
     if (threadIdx.y == 0) {
         int apron_y = max(0, y - 1);
-        if (x < width) {
+        if (x < width && apron_y < height) {
             tile_s[0][thread_x] = input[apron_y * width + x];
-        } else {
-            tile_s[0][thread_x] = 0;
         }
     }
 
-    // Загрузка нижней границы
-    if (threadIdx.y == TILE - 1 || y == height - 1) {
+    // Нижняя граница
+    if (threadIdx.y == TILE - 1) {
         int apron_y = min(height - 1, y + 1);
         if (x < width && apron_y < height) {
             tile_s[TILE + 1][thread_x] = input[apron_y * width + x];
-        } else {
-            tile_s[TILE + 1][thread_x] = 0;
         }
     }
 
-    // Загрузка углов
+    // Загружаем углы
+    // Векрхний левый угол
     if (threadIdx.x == 0 && threadIdx.y == 0) {
         int apron_x = max(0, x - 1);
         int apron_y = max(0, y - 1);
-        tile_s[0][0] = input[apron_y * width + apron_x];
+        if (apron_x < width && apron_y < height) {
+            tile_s[0][0] = input[apron_y * width + apron_x];
+        }
     }
 
-    if ((threadIdx.x == TILE - 1 || x == width - 1) && threadIdx.y == 0) {
+    // Верхний правый угол
+    if (threadIdx.x == TILE - 1 && threadIdx.y == 0) {
         int apron_x = min(width - 1, x + 1);
         int apron_y = max(0, y - 1);
-        if (apron_x < width) {
+        if (apron_x < width && apron_y < height) {
             tile_s[0][TILE + 1] = input[apron_y * width + apron_x];
-        } else {
-            tile_s[0][TILE + 1] = 0;
         }
     }
 
-    if (threadIdx.x == 0 && (threadIdx.y == TILE - 1 || y == height - 1)) {
+    // Нижний левый угол
+    if (threadIdx.x == 0 && threadIdx.y == TILE - 1) {
         int apron_x = max(0, x - 1);
         int apron_y = min(height - 1, y + 1);
-        if (apron_y < height) {
+        if (apron_x < width && apron_y < height) {
             tile_s[TILE + 1][0] = input[apron_y * width + apron_x];
-        } else {
-            tile_s[TILE + 1][0] = 0;
         }
     }
 
-    if ((threadIdx.x == TILE - 1 || x == width - 1) &&
-        (threadIdx.y == TILE - 1 || y == height - 1)) {
+    // Нижний правый угол
+    if (threadIdx.x == TILE - 1 && threadIdx.y == TILE - 1) {
         int apron_x = min(width - 1, x + 1);
         int apron_y = min(height - 1, y + 1);
         if (apron_x < width && apron_y < height) {
             tile_s[TILE + 1][TILE + 1] = input[apron_y * width + apron_x];
-        } else {
-            tile_s[TILE + 1][TILE + 1] = 0;
         }
     }
 
@@ -125,9 +128,11 @@ __global__ void sobel_filter(unsigned char* input, unsigned char* output, int wi
     }
 }
 
+
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input_file.pgm> <output_file.pgm>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <input_file> <output_file>\n", argv[0]);
+        fprintf(stderr, "Supported formats: PGM, PNG\n");
         return 1;
     }
 
@@ -139,7 +144,7 @@ int main(int argc, char* argv[]) {
     int width, height;
     
     printf("Loading image: %s\n", input_file);
-    if (load_pgm(input_file, &host_input, &width, &height) != 0) {
+    if (load_image(input_file, &host_input, &width, &height) != 0) {
         return 1;
     }
     printf("Image size: %d x %d\n", width, height);
@@ -192,9 +197,9 @@ int main(int argc, char* argv[]) {
 
     cudaMemcpy(host_output, d_output, image_size, cudaMemcpyDeviceToHost);
 
-    // Save result
+    // Сохранение результа
     printf("Saving result: %s\n", output_file);
-    if (save_pgm(output_file, host_output, width, height) != 0) {
+    if (save_image(output_file, host_output, width, height) != 0) {
         free(host_output);
         cudaFree(d_input);
         cudaFree(d_output);
@@ -202,7 +207,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Освобождение памяти
     free(host_input);
     free(host_output);
     cudaFree(d_input);
