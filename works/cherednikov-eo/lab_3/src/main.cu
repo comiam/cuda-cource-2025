@@ -144,7 +144,8 @@ int main(int argc, char* argv[]) {
     int width, height;
     
     printf("Loading image: %s\n", input_file);
-    if (load_image(input_file, &host_input, &width, &height) != 0) {
+    host_input = load_image(input_file, &width, &height);
+    if (!host_input) {
         return 1;
     }
     printf("Image size: %d x %d\n", width, height);
@@ -199,13 +200,7 @@ int main(int argc, char* argv[]) {
 
     // Сохранение результа
     printf("Saving result: %s\n", output_file);
-    if (save_image(output_file, host_output, width, height) != 0) {
-        free(host_output);
-        cudaFree(d_input);
-        cudaFree(d_output);
-        free(host_input);
-        return 1;
-    }
+    save_image(output_file, host_output, width, height);
 
     free(host_input);
     free(host_output);
