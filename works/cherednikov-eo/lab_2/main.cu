@@ -55,9 +55,9 @@ __global__ void gpu_naive_mm(int *A,int *B, int *C, int m, int n, int k)
 // Оптимизированная версия перемножения матриц
 __global__ void gpu_optimised_mm(const int *A, const int *B, int *C, int m, int n, int k)
 {
-    // shared tiles (optional +1 to mitigate bank conflicts)
-    __shared__ int tile_a[TILE][TILE];
-    __shared__ int tile_b[TILE][TILE];
+    // shared tiles (+1 to mitigate bank conflicts)
+    __shared__ int tile_a[TILE][TILE + 1];
+    __shared__ int tile_b[TILE][TILE + 1];
 
     int bx = blockIdx.x; int by = blockIdx.y;
     int tx = threadIdx.x; int ty = threadIdx.y;
@@ -65,7 +65,7 @@ __global__ void gpu_optimised_mm(const int *A, const int *B, int *C, int m, int 
     int row = by * TILE + ty;   // Глобальный индекс строки для матрицы C
     int col = bx * TILE + tx;   // Глобальный индекс колонки для матрицы C
 
-    int acc = 0;
+    long long acc = 0;
 
     // Количество Тайлов для покрытия "среднего" измерения (n)
     int numTiles = (n + TILE - 1) / TILE;
