@@ -54,7 +54,7 @@ Magnitude = √(Gx² + Gy²)
 ## Результаты
 
 ```
-Sobel time: 0.670912 ms (size: 7045x4552)
+Sobel time: 0.176832 ms (size: 2560x1440)
 Code output in: image/2k_sobel.png
 ```
 
@@ -64,8 +64,9 @@ Code output in: image/cool_sobel.png
 ```
 
 ```
-Sobel time: 0.153536 ms (size: 1080x640)
-Code output in: image/test_sobel.png
+PS D:\CUDA\cuda-cource-2025\works\cherednikov-eo\lab_3> ./sobel image/bird.pgm image/bird_sobel.pgm
+Sobel time: 0.109024 ms (size: 321x481)
+Code output in: image/bird_sobel.pgm
 ```
 
 

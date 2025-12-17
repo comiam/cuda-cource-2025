@@ -27,8 +27,15 @@ bool loadPGM(const std::string& filename, std::vector<unsigned char>& image, uns
 
     std::string magic;
     file >> magic;
-    if (magic != "P5") {
-        std::cerr << "Wrong format!" << std::endl;
+    if (magic != "P5" && magic != "P2") {
+        std::cerr << "Wrong PGM format! Expected P5 (binary) or P2 (ASCII), got: " << magic << std::endl;
+        std::cerr << "Note: Only P5 (binary PGM) format is fully supported." << std::endl;
+        return false;
+    }
+    
+    // P2 (ASCII) формат не поддерживается
+    if (magic == "P2") {
+        std::cerr << "P2 (ASCII PGM) format is not supported. Please use P5 (binary PGM) format." << std::endl;
         return false;
     }
 
@@ -45,7 +52,7 @@ bool loadPGM(const std::string& filename, std::vector<unsigned char>& image, uns
     }
 
     if (!(file >> width >> height)) {
-        std::cerr << "Error reading wifth adn height." << std::endl;
+        std::cerr << "Error reading width and height from PGM file." << std::endl;
         return false;
     }
 
@@ -121,12 +128,35 @@ bool savePNG(const std::string& filename, const std::vector<unsigned char>& imag
 
 
 bool loadImage(const std::string& filename, std::vector<unsigned char>& image, unsigned& width, unsigned& height) {
-    if (endsWith(filename, ".pgm")) {
-        return loadPGM(filename, image, width, height);
-    } else if (endsWith(filename, ".png")) {
+    // Определяем формат по содержимому файла, а не только по расширению
+    std::ifstream test_file(filename, std::ios::binary);
+    if (!test_file) {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        return false;
+    }
+    
+    // Читаем первые байты для определения формата
+    char header[8];
+    test_file.read(header, 8);
+    test_file.close();
+    
+    // Проверка PNG сигнатуры (89 50 4E 47 0D 0A 1A 0A)
+    if (header[0] == '\x89' && header[1] == 'P' && header[2] == 'N' && header[3] == 'G') {
         return loadPNG(filename, image, width, height);
-    } else {
-        std::cerr << "Only .pgm and .png supported" << std::endl;
+    }
+    // Проверка PGM сигнатуры (P5 или P2)
+    else if (header[0] == 'P' && (header[1] == '5' || header[1] == '2')) {
+        return loadPGM(filename, image, width, height);
+    }
+    // Если не удалось определить по сигнатуре, пробуем по расширению
+    else if (endsWith(filename, ".png")) {
+        return loadPNG(filename, image, width, height);
+    }
+    else if (endsWith(filename, ".pgm")) {
+        return loadPGM(filename, image, width, height);
+    }
+    else {
+        std::cerr << "Unsupported file format. Only .pgm and .png are supported." << std::endl;
         return false;
     }
 }
