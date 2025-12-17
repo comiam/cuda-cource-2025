@@ -1,11 +1,12 @@
-#include "../headers/utils.h"
+#include "../include/utils.h"
+#include "lodepng.h"
 #include <iostream>
 #include <fstream>
 #include <cstring>
 #include <cctype>
 #include <algorithm>
 #include <limits>
-#include "../headers/lodepng.h"
+
 
 
 bool endsWith(const std::string& str, const std::string& suffix) {
@@ -16,17 +17,18 @@ bool endsWith(const std::string& str, const std::string& suffix) {
     return false;
 }
 
+
 bool loadPGM(const std::string& filename, std::vector<unsigned char>& image, unsigned& width, unsigned& height) {
     std::ifstream file(filename, std::ios::binary);
     if (!file) {
-        std::cerr << "Не удалось открыть файл: " << filename << std::endl;
+        std::cerr << "Error opening image: " << filename << std::endl;
         return false;
     }
 
     std::string magic;
     file >> magic;
     if (magic != "P5") {
-        std::cerr << "Файл не является бинарным PGM (ожидался P5, найдено: " << magic << ")" << std::endl;
+        std::cerr << "Wrong format!" << std::endl;
         return false;
     }
 
@@ -43,18 +45,18 @@ bool loadPGM(const std::string& filename, std::vector<unsigned char>& image, uns
     }
 
     if (!(file >> width >> height)) {
-        std::cerr << "Не удалось прочитать ширину и высоту из PGM-файла." << std::endl;
+        std::cerr << "Error reading wifth adn height." << std::endl;
         return false;
     }
 
     int maxval;
     if (!(file >> maxval)) {
-        std::cerr << "Не удалось прочитать maxval из PGM-файла." << std::endl;
+        std::cerr << "Error reading maxval" << std::endl;
         return false;
     }
 
     if (maxval <= 0 || maxval > 255) {
-        std::cerr << "Неподдерживаемый maxval: " << maxval << " (ожидалось 1..255)" << std::endl;
+        std::cerr << "Not Supported maxval: " << maxval << " (expected 1..255)" << std::endl;
         return false;
     }
 
@@ -70,12 +72,13 @@ bool loadPGM(const std::string& filename, std::vector<unsigned char>& image, uns
     file.read(reinterpret_cast<char*>(image.data()), expected_size);
 
     if (!file) {
-        std::cerr << "Ошибка при чтении пиксельных данных из PGM." << std::endl;
+        std::cerr << "Error while reading pixels" << std::endl;
         return false;
     }
 
     return true;
 }
+
 
 bool savePGM(const std::string& filename, const std::vector<unsigned char>& image, unsigned width, unsigned height) {
     std::ofstream file(filename, std::ios::binary);
@@ -85,16 +88,18 @@ bool savePGM(const std::string& filename, const std::vector<unsigned char>& imag
     return true;
 }
 
+
 bool loadPNG(const std::string& filename, std::vector<unsigned char>& image, unsigned& width, unsigned& height) {
     std::vector<unsigned char> rgba;
     unsigned error = lodepng::decode(rgba, width, height, filename);
     if (error) {
-        std::cerr << "Ошибка lodepng при загрузке " << filename << ": "
+        std::cerr << "LodePNG Error " << filename << ": "
                   << lodepng_error_text(error) << std::endl;
         return false;
     }
 
-    // RGBA -> Grayscale (0.299*R + 0.587*G + 0.114*B)
+    // Преобразование RGBA -> Grayscale по стандартной формуле
+    // Используются веса: R=0.299, G=0.587, B=0.114 (стандарт ITU-R BT.601)
     image.resize(width * height);
     for (size_t i = 0; i < rgba.size(); i += 4) {
         float gray = 0.299f * rgba[i] + 0.587f * rgba[i + 1] + 0.114f * rgba[i + 2];
@@ -103,15 +108,17 @@ bool loadPNG(const std::string& filename, std::vector<unsigned char>& image, uns
     return true;
 }
 
+
 bool savePNG(const std::string& filename, const std::vector<unsigned char>& image, unsigned width, unsigned height) {
     unsigned error = lodepng::encode(filename, image, width, height, LCT_GREY, 8);
     if (error) {
-        std::cerr << "Ошибка lodepng при сохранении " << filename << ": "
+        std::cerr << "lodePNG ERROR while saving " << filename << ": "
                   << lodepng_error_text(error) << std::endl;
         return false;
     }
     return true;
 }
+
 
 bool loadImage(const std::string& filename, std::vector<unsigned char>& image, unsigned& width, unsigned& height) {
     if (endsWith(filename, ".pgm")) {
@@ -119,10 +126,11 @@ bool loadImage(const std::string& filename, std::vector<unsigned char>& image, u
     } else if (endsWith(filename, ".png")) {
         return loadPNG(filename, image, width, height);
     } else {
-        std::cerr << "Поддерживаются только .pgm и .png файлы." << std::endl;
+        std::cerr << "Only .pgm and .png supported" << std::endl;
         return false;
     }
 }
+
 
 bool saveImage(const std::string& filename, const std::vector<unsigned char>& image, unsigned width, unsigned height) {
     if (endsWith(filename, ".pgm")) {
@@ -130,7 +138,7 @@ bool saveImage(const std::string& filename, const std::vector<unsigned char>& im
     } else if (endsWith(filename, ".png")) {
         return savePNG(filename, image, width, height);
     } else {
-        std::cerr << "Поддерживаются только .pgm и .png для вывода." << std::endl;
+        std::cerr << "Only .pgm and .png supported for output" << std::endl;
         return false;
     }
 }

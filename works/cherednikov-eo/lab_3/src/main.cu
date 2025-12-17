@@ -1,8 +1,11 @@
-#include "../headers/utils.h"
-#include "../headers/error_check.cuh"
+#include "../include/utils.h"
+#include "../include/error_check.cuh"
 #include <cuda_runtime.h>
 #include <iostream>
 #include <vector>
+#include <string>
+
+
 
 __global__ void sobel_kernel(
     const unsigned char* input,
@@ -11,23 +14,32 @@ __global__ void sobel_kernel(
     unsigned height
 );
 
+
 int main(int argc, char* argv[]) {
+    if (argc != 3) {
+        std::cerr << "Write data like this xample: " << " image/2k.png image/2k_sobel.png" << std::endl;
+        return 1;
+    }
+
     std::string input_path = argv[1];
     std::string output_path = argv[2];
+
 
     std::vector<unsigned char> h_input;
     unsigned width, height;
 
     if (!loadImage(input_path, h_input, width, height)) {
+        std::cerr << "Error loading image: " << input_path << std::endl;
         return 1;
     }
 
     size_t img_size = width * height * sizeof(unsigned char);
-
     unsigned char *d_input, *d_output;
+    
     CUDA_CHECK(cudaMalloc(&d_input, img_size));
     CUDA_CHECK(cudaMalloc(&d_output, img_size));
     CUDA_CHECK(cudaMemcpy(d_input, h_input.data(), img_size, cudaMemcpyHostToDevice));
+
 
     dim3 blockSize(16, 16);
     dim3 gridSize((width + blockSize.x - 1) / blockSize.x,
@@ -44,18 +56,28 @@ int main(int argc, char* argv[]) {
     CUDA_CHECK(cudaEventRecord(stop));
     CUDA_CHECK(cudaEventSynchronize(stop));
 
+
     float ms = 0;
     CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
-    std::cout << "Время выполнения Sobel: " << ms << " мс (размер: " << width << "x" << height << ")" << std::endl;
+    std::cout << "Sobel time: " << ms << " ms (size: "
+              << width << "x" << height << ")" << std::endl;
 
+    // Копирование результата обратно на CPU
     std::vector<unsigned char> h_output(width * height);
     CUDA_CHECK(cudaMemcpy(h_output.data(), d_output, img_size, cudaMemcpyDeviceToHost));
 
+    // Сохранение результата
     if (!saveImage(output_path, h_output, width, height)) {
+        std::cerr << "Error saving image: " << output_path << std::endl;
+        CUDA_CHECK(cudaFree(d_input));
+        CUDA_CHECK(cudaFree(d_output));
+        CUDA_CHECK(cudaEventDestroy(start));
+        CUDA_CHECK(cudaEventDestroy(stop));
         return 1;
     }
 
-    std::cout << "Результат сохранён в: " << output_path << std::endl;
+    std::cout << "Code output in: " << output_path << std::endl;
+
 
     CUDA_CHECK(cudaFree(d_input));
     CUDA_CHECK(cudaFree(d_output));
