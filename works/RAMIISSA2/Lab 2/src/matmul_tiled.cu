@@ -29,54 +29,44 @@ void matmul_tiled_kernel(const float* __restrict__ A,
     float acc = 0.0f;
 
     // Number of tiles along the K / N dimension
-    int fullTiles = N / TILE_DIM;          // tiles with no bounds issues
-    int remainder = N % TILE_DIM;          // edge tile exists if > 0
+    int fullTilesNum = N / TILE_DIM;          
+    int remainder = N % TILE_DIM;          
 
-    /* ============================================================
-       Path 1: FULL tiles — no bounds checks at all
-       ============================================================ */
-    for (int t = 0; t < fullTiles; ++t)
+    for (int t = 0; t < fullTilesNum; ++t)
     {
-        int tx = threadIdx.x;
-        int ty = threadIdx.y;
+        int thread_x = threadIdx.x;
+        int thread_y = threadIdx.y;
 
-        As[ty][tx] = A[row * N + t * TILE_DIM + tx];
-        Bs[ty][tx] = B[(t * TILE_DIM + ty) * K + col];
+        As[thread_y][thread_x] = A[(row * N) + (t * TILE_DIM) + thread_x];
+        Bs[thread_y][thread_x] = B[(t * TILE_DIM + thread_y) * K + col];
 
         __syncthreads();
 
-#pragma unroll
+        #pragma unroll
         for (int k = 0; k < TILE_DIM; ++k)
-            acc += As[ty][k] * Bs[k][tx];
+            acc += As[thread_y][k] * Bs[k][thread_x];
 
         __syncthreads();
     }
 
-    /* ============================================================
-       Path 2: EDGE tile — bounds checks (executed once)
-       ============================================================ */
     if (remainder > 0)
     {
-        int t = fullTiles;
-        int tx = threadIdx.x;
-        int ty = threadIdx.y;
+        int t = fullTilesNum;
+        int thread_x = threadIdx.x;
+        int thread_y = threadIdx.y;
 
-        int aCol = t * TILE_DIM + tx;
-        int bRow = t * TILE_DIM + ty;
+        int aCol = (t * TILE_DIM) + thread_x;
+        int bRow = (t * TILE_DIM) + thread_y;
 
-        As[ty][tx] = (row < M && aCol < N)
-            ? A[row * N + aCol]
-            : 0.0f;
+        As[thread_y][thread_x] = (row < M && aCol < N) ? A[row * N + aCol] : 0.0f;
 
-        Bs[ty][tx] = (bRow < N && col < K)
-            ? B[bRow * K + col]
-            : 0.0f;
+        Bs[thread_y][thread_x] = (bRow < N && col < K) ? B[bRow * K + col] : 0.0f;
 
         __syncthreads();
 
-#pragma unroll
+        #pragma unroll
         for (int k = 0; k < TILE_DIM; ++k)
-            acc += As[ty][k] * Bs[k][tx];
+            acc += As[thread_y][k] * Bs[k][thread_x];
 
         __syncthreads();
     }
