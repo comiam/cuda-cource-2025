@@ -2,11 +2,10 @@
 #include <vector>
 #include <string>
 #include <fstream>
-#include <filesystem>  // Add this
-#include <iostream>    // Add this
-
-#define cimg_use_png   // Add this if not already included elsewhere
-#include "CImg.h"      // Add this if not already included
+#include <filesystem>
+#include <iostream>
+#include <cstring>
+#include <opencv2/opencv.hpp>
 
 class Int8EntropyCalibrator2 : public nvinfer1::IInt8EntropyCalibrator2
 {
@@ -173,15 +172,41 @@ private:
         for (auto const& dir_entry : std::filesystem::directory_iterator{path})
         {
             if (std::filesystem::is_directory(dir_entry)) continue;
-            cimg_library::CImg<float> image((char*)dir_entry.path().c_str());
-            if (image.is_empty()) continue;
-
-            image.normalize(0.0F, 1.0F);
-            image.resize(mInputWidth, mInputHeight);
             
-            // Convert to contiguous float array
+            // Load image as BGR (OpenCV default)
+            cv::Mat image = cv::imread(dir_entry.path().string(), cv::IMREAD_COLOR);
+            if (image.empty()) continue;
+
+            // Convert BGR to RGB
+            cv::Mat image_rgb;
+            cv::cvtColor(image, image_rgb, cv::COLOR_BGR2RGB);
+
+            // Resize FIRST on uint8 (matches CImg behavior - resize before normalization)
+            // Use INTER_LINEAR to match CImg's default resize interpolation
+            cv::Mat resized;
+            cv::resize(image_rgb, resized, cv::Size(mInputWidth, mInputHeight), 0, 0, cv::INTER_LINEAR);
+
+            // Normalize to [0, 1] float range AFTER resize (matches CImg normalize(0.0F, 1.0F))
+            cv::Mat normalized;
+            resized.convertTo(normalized, CV_32F, 1.0 / 255.0);
+
+            // Convert to contiguous float array (HWC layout: height * width * channels)
             std::vector<float> imgData(mInputChannels * mInputHeight * mInputWidth);
-            std::copy(image.data(), image.data() + image.size(), imgData.data());
+            size_t channelSize = mInputHeight * mInputWidth;
+            const float* srcData = normalized.ptr<float>();
+            
+            // Reorganize from [R0,G0,B0, R1,G1,B1, ...] to [R0,R1,..., G0,G1,..., B0,B1,...]
+            for (int c = 0; c < mInputChannels; ++c) {
+                for (int h = 0; h < mInputHeight; ++h) {
+                    for (int w = 0; w < mInputWidth; ++w) {
+                        // HWC: srcData[h * width * channels + w * channels + c]
+                        // CHW: imgData[c * height * width + h * width + w]
+                        imgData[c * channelSize + h * mInputWidth + w] = 
+                            srcData[h * mInputWidth * mInputChannels + w * mInputChannels + c];
+                    }
+                }
+            }
+            
             mCalibrationImages.push_back(imgData);
         }
     }

@@ -1,17 +1,36 @@
 #include "Utils.h"
 
+using namespace std;
 
-std::vector<cimg_library::CImg<float>> Utility::processInput(Params p, const std::filesystem::path img_folder){
-    std::vector<cimg_library::CImg<float>> preprocessedImgList;
-    for (auto const& dir_entry : std::filesystem::directory_iterator{img_folder}){
-        if (std::filesystem::is_directory(dir_entry)) continue;
-        cimg_library::CImg<float> image((char *)dir_entry.path().c_str());
-        if (image.is_empty()) continue;
+vector<cv::Mat> Utility::processInput(Params p, const filesystem::path img_folder){
+    vector<cv::Mat> preprocessedImgList;
+    for (auto const& dir_entry : filesystem::directory_iterator{img_folder}){
+        if (filesystem::is_directory(dir_entry)) continue;
+        
+        // Load image as BGR (OpenCV default)
+        cv::Mat image = cv::imread(dir_entry.path().string(), cv::IMREAD_COLOR);
+        if (image.empty()) continue;
+        assert(image.channels() == 3);
 
-        image.normalize(0.0F, 1.0F);
-        image.resize(p.inputWidth, p.inputHeight);
+        // Convert BGR to RGB
+        cv::Mat image_rgb;
+        cv::cvtColor(image, image_rgb, cv::COLOR_BGR2RGB);
 
-        preprocessedImgList.push_back(image);
+        // Resize FIRST on uint8 (matches CImg behavior - resize before normalization)
+        // Use INTER_LINEAR to match CImg's default resize interpolation
+        cv::Mat resized;
+        cv::resize(image_rgb, resized, cv::Size(p.inputWidth, p.inputHeight), 0, 0, cv::INTER_LINEAR);
+
+        // Normalize to [0, 1] float range AFTER resize (matches CImg normalize(0.0F, 1.0F))
+        cv::Mat normalized;
+        resized.convertTo(normalized, CV_32F, 1.0 / 255.0);
+
+        assert(normalized.rows == p.inputHeight && normalized.cols == p.inputWidth && normalized.channels() == p.inputNChannels);
+        
+        // Ensure contiguous memory layout
+        cv::Mat final_img = normalized.clone();
+
+        preprocessedImgList.push_back(final_img);
 
     }
     return preprocessedImgList;
@@ -19,42 +38,56 @@ std::vector<cimg_library::CImg<float>> Utility::processInput(Params p, const std
 
 
 void Utility::drawResult(
-    cimg_library::CImg<float> img, 
-    std::vector<Detection> detections, 
+    cv::Mat img, 
+    vector<Detection> detections, 
     const char* file_name
 ){
+    // Convert from [0,1] float RGB to [0,255] uchar BGR for display
+    cv::Mat img_display;
+    img.convertTo(img_display, CV_8U, 255.0);
+    cv::Mat img_bgr;
+    cv::cvtColor(img_display, img_bgr, cv::COLOR_RGB2BGR);
     
-    cimg_library::CImg<unsigned char> img_normalized = img.normalize(0, 255);
-    unsigned char color[] = {255, 0, 0};
-    unsigned char fg_color[] = {255, 255, 255};
-    unsigned char bg_color[] = {0, 0, 0};
-    
+    // Draw bounding boxes and labels
     for (Detection const& det : detections){
-        img.draw_rectangle(det.bbox.x0, det.bbox.y0, det.bbox.x1, det.bbox.y1, color, 1, 0xFFFFFFFF);
-        img.draw_text(det.bbox.x0, det.bbox.y0, std::to_string(det.classId).c_str(), fg_color, bg_color, 1);
+        cv::Point pt1(det.bbox.x0, det.bbox.y0);
+        cv::Point pt2(det.bbox.x1, det.bbox.y1);
+        cv::Scalar color(0, 0, 255); // Red in BGR
+        cv::rectangle(img_bgr, pt1, pt2, color, 2);
+        
+        // Draw class ID text
+        string label = to_string(det.classId);
+        cv::Point textPos(det.bbox.x0, det.bbox.y0 - 5);
+        cv::Scalar textColor(255, 255, 255); // White
+        cv::Scalar bgColor(0, 0, 0); // Black background
+        int baseline = 0;
+        cv::Size textSize = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseline);
+        cv::rectangle(img_bgr, textPos + cv::Point(0, baseline), 
+                     textPos + cv::Point(textSize.width, -textSize.height), bgColor, -1);
+        cv::putText(img_bgr, label, textPos, cv::FONT_HERSHEY_SIMPLEX, 0.5, textColor, 1);
     }
 
-    img.save_png(file_name);
+    cv::imwrite(file_name, img_bgr);
 };
 
 
 
-std::vector<std::vector<Detection>> Utility::processOutput(float* output, int numImages, Params params)
+vector<vector<Detection>> Utility::processOutput(float* output, int numImages, Params params, float confThreshold)
 {
-    std::vector<std::vector<Detection>> resultList;
+    vector<vector<Detection>> resultList;
     
     uint32_t row_ptr;
     uint32_t floatsPerImage = params.outputItemSize * params.outputLength;
     for (int i=0; i < numImages; ++i){
-        std::vector<Detection> result;
+        vector<Detection> result;
         for (int j=0; j < params.outputLength; ++j){
             if (j==0){
                 for (int k=0; k < params.outputItemSize; ++k){
-                    std::cout << output[i * floatsPerImage + j * params.outputItemSize + k] << " ";
+                    cout << output[i * floatsPerImage + j * params.outputItemSize + k] << " ";
                 }
-                std::cout << std::endl;
+                cout << endl;
             }
-            if (output[i * floatsPerImage + j * params.outputItemSize + 4] < 0.6) continue;
+            if (output[i * floatsPerImage + j * params.outputItemSize + 4] < 0.5) continue;
             row_ptr = i * floatsPerImage + j * params.outputItemSize;
             // Scale normalized coordinates (0-1) to pixel coordinates
             result.push_back(
@@ -66,76 +99,27 @@ std::vector<std::vector<Detection>> Utility::processOutput(float* output, int nu
             );
             
             for (int k=0; k < params.outputItemSize; ++k){
-                std::cout << output[row_ptr + k] << " ";
+                cout << output[row_ptr + k] << " ";
             }
-            std::cout << std::endl;
+            cout << endl;
             
             
         }
         resultList.push_back(result);
     }
     
-    /* 
-    std::cout << "Processed " << resultList.size() << " images with detections: [";
-    for (int k=0; k < numImages; ++k){
-        std::cout << resultList[k].size() << " ";
-    }
-    std::cout << "]" << std::endl;
-    */
-    
     return resultList;
 }
 
 
-void Utility::logInference(Params p, const char* engine, int maxBatchSize, std::vector<double> data){
-
-    // Запись в файл
-	if (!std::filesystem::exists(p.outputFileName)) {
-		std::ofstream outputFile(p.outputFileName);
-		std::vector<int> batchHeaders(maxBatchSize);
-    	std::iota(batchHeaders.begin(), batchHeaders.end(), 1); // fill from 1 to maxBatchSize
-		
-		outputFile << "Backend,Model,NumThreads,";
-        std::copy(batchHeaders.begin(), batchHeaders.end(), std::experimental::ostream_joiner(outputFile, ','));
-        outputFile << "\n"; // Добавляем символ новой строки после заголовка
-		outputFile.close();
-    }
-
-
-	std::ofstream outputFile(p.outputFileName, std::ios_base::app);
-	assert(outputFile.is_open());
-	
-
-	// поиск названия модели
-	std::string model_variant;
-	std::regex pattern(R"(v10([a-z]+)_dyn\.onnx)");
-	std::smatch match;
-	if (std::regex_search(p.onnxFileName, match, pattern)) {
-        model_variant = match.str(1); 
-    } else {
-        throw std::runtime_error("Could not parse model name");
-    }
-
-	outputFile << engine << "," << model_variant << "," << p.numThreads << ",";
-	std::copy(data.begin(), data.end(), std::experimental::ostream_joiner(outputFile, ','));
-    outputFile << "\n";
-	outputFile.close();
-}
-
 Params Utility::createDefaultParams(const char* onnxFileName) {
     Params params;
-    
-    std::filesystem::path onnxFilePath(onnxFileName);
-    std::string engineFileName = onnxFilePath.replace_extension("engine").string();
-    
-    params.onnxFileName = onnxFileName;
-    params.engineFileName = engineFileName;
     
     params.inputTensorNames.push_back("images");
     params.outputTensorNames.push_back("output0");   
     
     params.dlaCore = -1; // not supported on the server
-    params.int8 = true;
+    params.int8 = false;
     params.fp16 = false;
     params.bf16 = false;
     
@@ -149,5 +133,17 @@ Params Utility::createDefaultParams(const char* onnxFileName) {
     params.calibrationDataPath = "assets/"; 
     params.calibrationCacheFile = "models/calibration.cache";
     
+    filesystem::path onnxFilePath(onnxFileName);
+    string baseName = onnxFilePath.stem().string(); 
+    auto parentDir = onnxFilePath.parent_path();    
+
+    string suffix;
+    if (params.int8) suffix += ".int8";
+    else if (params.bf16) suffix += ".bf16";
+    else if (params.fp16) suffix += ".fp16";
+
+    params.onnxFileName = onnxFileName;
+    params.engineFileName = (parentDir / (baseName + suffix + ".engine")).string();
+
     return params;
 }

@@ -142,7 +142,7 @@ bool DetectionModelTRT::load(){
 
 
 void DetectionModelTRT::detect(
-    vector<cimg_library::CImg<float>> imgList, 
+    vector<cv::Mat> imgList, 
     float*& rawOutput
 ){
     
@@ -162,11 +162,31 @@ void DetectionModelTRT::detect(
     assert(mParams.inputTensorNames.size() == 1); // only one model entrance
 
     
-    // copy img from CImg instance to HostBuffer
+    // copy img from cv::Mat to HostBuffer
+    // Convert from HWC (cv::Mat) to NCHW (model expects: batch, channels, height, width)
     float* hostDataBuffer = static_cast<float*>(buffers.getHostBuffer(mParams.inputTensorNames[0]));
-    for (int i=0; i<imgList.size(); ++i){
-        auto img = imgList[i];
-        copy(img.data(), img.data() + img.size(), hostDataBuffer + i*img.size());
+    size_t imgSize = mParams.inputNChannels * mParams.inputHeight * mParams.inputWidth;
+    size_t channelSize = mParams.inputHeight * mParams.inputWidth;
+    
+    for (int batchIdx = 0; batchIdx < imgList.size(); ++batchIdx){
+        const cv::Mat& img = imgList[batchIdx];
+        assert(img.isContinuous());
+        assert(img.rows == mParams.inputHeight && img.cols == mParams.inputWidth && img.channels() == mParams.inputNChannels);
+        
+        const float* srcData = img.ptr<float>();
+        float* dstData = hostDataBuffer + batchIdx * imgSize;
+        
+        // Convert HWC to CHW: reorganize from [R0,G0,B0, R1,G1,B1, ...] to [R0,R1,..., G0,G1,..., B0,B1,...]
+        for (int c = 0; c < mParams.inputNChannels; ++c) {
+            for (int h = 0; h < mParams.inputHeight; ++h) {
+                for (int w = 0; w < mParams.inputWidth; ++w) {
+                    // HWC: srcData[h * width * channels + w * channels + c]
+                    // CHW: dstData[c * height * width + h * width + w]
+                    dstData[c * channelSize + h * mParams.inputWidth + w] = 
+                        srcData[h * mParams.inputWidth * mParams.inputNChannels + w * mParams.inputNChannels + c];
+                }
+            }
+        }
     }
 
     // Memcpy from host input buffers to device input buffers
@@ -204,17 +224,17 @@ void DetectionModelTRT::exit(){
 
 
 bool DetectionModelTRT::prepareEngine() {
-    std::cout << "Building and running a GPU inference engine for " << mParams.onnxFileName << std::endl;
+    cout << "Building and running a GPU inference engine for " << mParams.onnxFileName << endl;
     
     bool status = build();
-    std::cout << std::boolalpha << "Build Engine with status " << status << std::endl;
+    cout << boolalpha << "Build Engine with status " << status << endl;
     
     if (!status) {
         return false;
     }
     
     status = load();
-    std::cout << std::boolalpha << "Load Engine with status " << status << std::endl;
+    cout << boolalpha << "Load Engine with status " << status << endl;
     
     return status;
 }
@@ -225,9 +245,18 @@ int main(int argc, char** argv)
     char* onnxFileName = argv[1];
 
     filesystem::path onnxFilePath(onnxFileName);
-    string engineFileName = onnxFilePath.replace_extension("engine").string();
   
     Params params = Utility::createDefaultParams(onnxFileName);
+    cout << "Building Engine with params:\n"
+          << "- ONNX file path: " << params.onnxFileName << "\n"
+          << "- Engine file name: " << params.engineFileName << "\n"
+          << "- Optimizations: INT8=" << boolalpha << params.int8 << " "
+          << "FP16=" << boolalpha << params.fp16 << " "
+          << "BF16=" << boolalpha << params.bf16 << "\n"
+          << "- Input (HxWxC): " << params.inputHeight << "x" << params.inputWidth << "x" << params.inputNChannels << "\n"
+          << "- Output: " << params.outputLength << "x" << params.outputItemSize << "\n"
+          << "- Calibration data path: " << params.calibrationDataPath << "\n"
+          << "- Calibration cache file: " << params.calibrationCacheFile << "\n";
     DetectionModelTRT Engine(params);
 
     bool status = Engine.prepareEngine();
@@ -237,7 +266,7 @@ int main(int argc, char** argv)
     }
     
     const filesystem::path img_path{"assets/"};
-    vector<cimg_library::CImg<float>> fullImgList = Utility::processInput(params, img_path);
+    vector<cv::Mat> fullImgList = Utility::processInput(params, img_path);
     int numberOfImages = fullImgList.size();
     cout << "Total number of Images: " << numberOfImages << endl;
     cout << endl;
@@ -246,11 +275,11 @@ int main(int argc, char** argv)
     Timer timer;
 
 
-    int batchSize = 3;
-    vector<cimg_library::CImg<float>> randomBatch(batchSize);
+    int batchSize = 10;
+    float confThreshold = 0.6;
+    vector<cv::Mat> randomBatch(batchSize);
     float* rawOutput = nullptr;
 
-    vector<double> timePerBatch;
     sample(fullImgList.begin(), fullImgList.end(), randomBatch.begin(), batchSize, randomRange);
 
     timer.tic();
@@ -259,7 +288,7 @@ int main(int argc, char** argv)
     cout << "Batch size=" << batchSize << " took " << diff  << " ms, "  <<
         diff/batchSize << " ms/img" << endl;
 
-    vector<vector<Detection>> resultList = Utility::processOutput(rawOutput, batchSize, params);
+    vector<vector<Detection>> resultList = Utility::processOutput(rawOutput, batchSize, params, confThreshold);
         
     assert(batchSize == resultList.size());
     for(int i = 0; i < batchSize; ++i){

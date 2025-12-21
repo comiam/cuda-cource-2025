@@ -8,10 +8,7 @@
 #include <fstream>
 #include <regex>
 #include <experimental/iterator>
-
-
-#define cimg_use_png
-#include "CImg.h"
+#include <opencv2/opencv.hpp>
 
 #ifndef UTILS
 #define UTILS
@@ -23,13 +20,11 @@ struct Params
     std::string engineFileName;
     int32_t batchSize{1};              //!< Number of inputs in a batch
     int32_t dlaCore{-1};               //!< Specify the DLA core to run network on.
-    bool int8{false};                  //!< Allow runnning the network in Int8 mode.
+    bool int8{true};                  //!< Allow runnning the network in Int8 mode.
     bool fp16{false};                  //!< Allow running the network in FP16 mode.
     bool bf16{false};                  //!< Allow running the network in BF16 mode.
-    std::vector<std::string> dataDirs; //!< Directory paths where sample data files are stored
     std::vector<std::string> inputTensorNames;
     std::vector<std::string> outputTensorNames;
-    std::string timingCacheFile; //!< Path to timing cache file
 
     std::string saveEngine;
     std::string loadEngine;
@@ -40,10 +35,6 @@ struct Params
 
     uint32_t outputLength;
     uint32_t outputItemSize;
-
-    int numThreads{-1};
-    int numInferenceAttempts{5};
-    std::string outputFileName;
 
     std::string calibrationDataPath;  // Path to calibration images
     std::string calibrationCacheFile; // Optional: cache file path
@@ -78,14 +69,18 @@ class Detection{
 
 class Utility{
     public:
-        static std::vector<cimg_library::CImg<float>> processInput(Params p, const std::filesystem::path img_folder);
+        static std::vector<cv::Mat> processInput(Params p, const std::filesystem::path img_folder);
         static void drawResult(
-            cimg_library::CImg<float> img, 
+            cv::Mat img, 
             std::vector<Detection> detections, 
             const char* file_name
         );
-        static std::vector<std::vector<Detection>> processOutput(float* output, int numImages, Params params);
-        static void logInference(Params p, const char* engine, int maxBatchSize, std::vector<double> data);
+        static std::vector<std::vector<Detection>> processOutput(
+            float* output, 
+            int numImages, 
+            Params params, 
+            float confThreshold
+        );
         static Params createDefaultParams(const char* onnxFileName);  // Add this line
 };
 

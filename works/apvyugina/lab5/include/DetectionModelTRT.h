@@ -16,7 +16,7 @@
 
 #include "Utils.h"
 #include "Buffers.h"
-#include "Calibrator.h"  // Add this include
+#include "Calibrator.h" 
 
 
 using namespace nvinfer1;
@@ -113,7 +113,7 @@ class DetectionModelTRT{
         bool load();
         bool prepareEngine();
         void detect(
-            std::vector<cimg_library::CImg<float>> img_list, 
+            std::vector<cv::Mat> img_list, 
             float*& rawOutput
         );
         void exit();

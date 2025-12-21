@@ -45,11 +45,15 @@ MESSAGE(STATUS "Found NvONNXParser at ${TENSORRT_LIBRARY_ONNXPARSER}")
 
 
 # OpenCV
-find_path(OPENCV_INCLUDE_DIRS NAMES "opencv2/core.hpp" HINTS "/usr/local/include/opencv4")
-MESSAGE(STATUS "Found OpenCV headers at ${OPENCV_INCLUDE_DIRS}")
-
-find_library(OPENCV_CORE_LIB NAMES "opencv_core" HINTS "/usr/local/lib")
-MESSAGE(STATUS "Found OpenCV_CoreLib at ${OPENCV_CORE_LIB}")
+set(OpenCV_DIR "/usr/local/lib/cmake/opencv4" CACHE PATH "OpenCV config directory")
+find_package(OpenCV REQUIRED)
+if(OpenCV_FOUND)
+    MESSAGE(STATUS "Found OpenCV version: ${OpenCV_VERSION}")
+    MESSAGE(STATUS "OpenCV include dirs: ${OpenCV_INCLUDE_DIRS}")
+    MESSAGE(STATUS "OpenCV libraries: ${OpenCV_LIBS}")
+else()
+    MESSAGE(FATAL_ERROR "OpenCV not found")
+endif()
 
 
 set(CUDART "/usr/lib/x86_64-linux-gnu/libcudart.so")
@@ -64,17 +68,16 @@ set_property(GLOBAL PROPERTY LINKER_LANGUAGE CXX)
 set(TARGET_TRT "DetectionModelTRT")
 add_executable(${TARGET_TRT} "${CMAKE_SOURCE_DIR}/src/DetectionModelTRT.cpp" "${CMAKE_SOURCE_DIR}/src/Utility.cpp")
 
+
 target_link_libraries(${TARGET_TRT} 
   ${CUDART}
   ${TENSORRT_LIBRARY_INFER} ${TENSORRT_LIBRARY_INFER_PLUGIN} ${TENSORRT_LIBRARY_ONNXPARSER}
-  ${OPENCV_CORE_LIB} ${PNG_LIB}
+  ${OpenCV_LIBS} ${PNG_LIB}
 )
 
 target_include_directories(${TARGET_TRT} 
     PUBLIC 
-        ${TENSORRT_INCLUDE_DIR} ${CUDA_INCLUDE_DIR} ${OPENCV_INCLUDE_DIRS} ${PNG_INCLUDE}
+        ${TENSORRT_INCLUDE_DIR} ${CUDA_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS} ${PNG_INCLUDE}
     PRIVATE
         "${CMAKE_SOURCE_DIR}/include"
 )
-
-
