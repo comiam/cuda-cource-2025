@@ -1,0 +1,8 @@
+.vscode/
+
+assets/
+models/
+*.png
+executables/
+build/
+__pycache__/
