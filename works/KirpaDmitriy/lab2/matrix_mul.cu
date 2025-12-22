@@ -7,6 +7,16 @@
 
 #define TILE_SIZE 32
 
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+   if (code != cudaSuccess) 
+   {
+      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) exit(code);
+   }
+}
+
 __global__ void matrixMulNaive(const float* A, const float* B, float* C, int M, int N, int K) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -29,19 +39,14 @@ __global__ void matrixMulShared(const float* A, const float* B, float* C, int M,
     
     float sum = 0.0f;
 
+    #pragma unroll
     for (int p = 0; p < (K + TILE_SIZE - 1) / TILE_SIZE; ++p) {
-        if (row < M && (p * TILE_SIZE + threadIdx.x) < K)
-            sA[threadIdx.y][threadIdx.x] = A[row * K + p * TILE_SIZE + threadIdx.x];
-        else
-            sA[threadIdx.y][threadIdx.x] = 0.0f;
-
-        if (col < N && (p * TILE_SIZE + threadIdx.y) < K)
-            sB[threadIdx.y][threadIdx.x] = B[(p * TILE_SIZE + threadIdx.y) * N + col];
-        else
-            sB[threadIdx.y][threadIdx.x] = 0.0f;
+        sA[threadIdx.y][threadIdx.x] = (row < M && (p * TILE_SIZE + threadIdx.x) < K)? A[row * K + p * TILE_SIZE + threadIdx.x] : 0.0f;
+        sB[threadIdx.y][threadIdx.x] = (col < N && (p * TILE_SIZE + threadIdx.y) < K)? B[(p * TILE_SIZE + threadIdx.y) * N + col] : 0.0f;
 
         __syncthreads();
 
+        #pragma unroll
         for (int k = 0; k < TILE_SIZE; ++k) {
             sum += sA[threadIdx.y][k] * sB[k][threadIdx.x];
         }
@@ -85,12 +90,12 @@ int main() {
     for (int i = 0; i < K * N; ++i) h_B[i] = static_cast<float>(rand()) / RAND_MAX;
 
     float *d_A, *d_B, *d_C;
-    cudaMalloc(&d_A, sizeA);
-    cudaMalloc(&d_B, sizeB);
-    cudaMalloc(&d_C, sizeC);
+    gpuErrchk(cudaMalloc(&d_A, sizeA));
+    gpuErrchk(cudaMalloc(&d_B, sizeB));
+    gpuErrchk(cudaMalloc(&d_C, sizeC));
 
-    cudaMemcpy(d_A, h_A, sizeA, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_B, h_B, sizeB, cudaMemcpyHostToDevice);
+    gpuErrchk(cudaMemcpy(d_A, h_A, sizeA, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(d_B, h_B, sizeB, cudaMemcpyHostToDevice));
 
     std::cout << "Matrix size: " << M << " x " << N << std::endl;
     std::cout << "Calculating on CPU..." << std::endl;
@@ -117,11 +122,14 @@ int main() {
     cudaEventElapsedTime(&gpu_time_naive, start, stop);
     gpu_time_naive /= 1000.0f;
 
+    cudaDeviceSynchronize();
+
     std::cout << "GPU Naive Time: " << gpu_time_naive << " s" << std::endl;
     cudaMemset(d_C, 0, sizeC);
 
     cudaEventRecord(start);
     matrixMulShared<<<dimGrid, dimBlock>>>(d_A, d_B, d_C, M, N, K);
+    // cudaDeviceSynchronize();
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&gpu_time_shared, start, stop);
@@ -129,7 +137,7 @@ int main() {
 
     std::cout << "GPU Shared Memory Time: " << gpu_time_shared << " s" << std::endl;
 
-    cudaMemcpy(h_C_GPU, d_C, sizeC, cudaMemcpyDeviceToHost);
+    gpuErrchk(cudaMemcpy(h_C_GPU, d_C, sizeC, cudaMemcpyDeviceToHost));
 
     double max_diff = 0.0;
     for (int i = 0; i < M * N; ++i) {
@@ -137,7 +145,7 @@ int main() {
         if (diff > max_diff) max_diff = diff;
     }
 
-    std::cout << "Correctness check max Error: " << max_diff << std::endl;
+    std::cout << "\n\nCorrectness check max Error: " << max_diff << std::endl;
 
     std::cout << "Speedup GPU Naive vs CPU: " << cpu_time / gpu_time_naive << "x" << std::endl;
     std::cout << "Speedup GPU Shared vs CPU: " << cpu_time / gpu_time_shared << "x" << std::endl;
