@@ -1,7 +1,7 @@
 #include "../include/matrix_multiply.h"
 #include "../include/error_check.cuh"
 
-#define TILE_SIZE 32
+#define TILE_SIZE 16
 
 __global__ void matrix_multiply_kernel_tiled(
     const float *matrix_a,
@@ -22,18 +22,24 @@ __global__ void matrix_multiply_kernel_tiled(
 
     float dot_product = 0.0f;
     const int num_tiles = (matrix_a_columns + TILE_SIZE - 1) / TILE_SIZE;
-    
-    #pragma unroll
+
+    #pragma unroll 8
     for (int tile_index = 0; tile_index < num_tiles; ++tile_index)
     {
         const int tiled_a_col = tile_index * TILE_SIZE + tx;
         const int tiled_b_row = tile_index * TILE_SIZE + ty;
 
-        tile_a[ty][tx] = matrix_a[row * matrix_a_columns + tiled_a_col];
-        tile_b[ty][tx] = matrix_b[tiled_b_row * matrix_b_columns + col];
+        tile_a[ty][tx] = (row < matrix_a_rows && tiled_a_col < matrix_a_columns)
+            ? matrix_a[row * matrix_a_columns + tiled_a_col]
+            : 0.0f;
+
+        tile_b[ty][tx] = (col < matrix_b_columns && tiled_b_row < matrix_a_columns)
+            ? matrix_b[tiled_b_row * matrix_b_columns + col]
+            : 0.0f;
+
         __syncthreads();
 
-        #pragma unroll
+        #pragma unroll 8
         for (int k = 0; k < TILE_SIZE; ++k)
             dot_product += tile_a[ty][k] * tile_b[k][tx];
 
