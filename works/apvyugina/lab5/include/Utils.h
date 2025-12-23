@@ -80,7 +80,7 @@ class Utility{
             Params params, 
             float confThreshold
         );
-        static Params createDefaultParams(const char* onnxFileName);  // Add this line
+        static Params createDefaultParams(const char* onnxFileName, const bool int8);
 };
 
 

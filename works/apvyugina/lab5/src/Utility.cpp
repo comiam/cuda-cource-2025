@@ -82,14 +82,14 @@ vector<vector<Detection>> Utility::processOutput(float* output, int numImages, P
 }
 
 
-Params Utility::createDefaultParams(const char* onnxFileName) {
+Params Utility::createDefaultParams(const char* onnxFileName, const bool int8) {
     Params params;
     
     params.inputTensorNames.push_back("images");
     params.outputTensorNames.push_back("output0");   
     
     params.dlaCore = -1; // not supported on the server
-    params.int8 = false;
+    params.int8 = int8;
     params.fp16 = false;
     params.bf16 = false;
     

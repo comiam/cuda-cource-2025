@@ -39,8 +39,8 @@ void detectOnRandomImages(
     timer.tic();
     engine.detect(preprocessedImgList, rawOutput);
     double diff = timer.toc();
-    cout << "Batch size=" << batchSize << " took " << diff  << " ms, "  <<
-        diff/batchSize << " ms/img" << endl;
+    cout << "Batch size=" <<numberOfImages << " took " << diff  << " ms, "  <<
+        diff/numberOfImages << " ms/img" << endl;
 
     vector<vector<Detection>> resultList = Utility::processOutput(rawOutput, batchSize, p, confThreshold);
         
@@ -124,8 +124,8 @@ void detectOnVideo(
 
 int main(int argc, char** argv)
 {   
-    if (argc != 4){
-        cerr << "Usage: " << argv[0] << "onnxFileName images|video /path/to/directory_or_video\n";
+    if (argc != 5){
+        cerr << "Usage: " << argv[0] << " onnxFileName images|video /path/to/directory_or_video int8_optimization\n";
         return 1;  
     }
 
@@ -134,6 +134,7 @@ int main(int argc, char** argv)
 
     const std::string type(argv[2]);
     const std::string path(argv[3]);
+    const std::string int8Arg(argv[4]);
 
     // Проверяем первый аргумент на валидность
     if ((type != "images") && (type != "video")) {
@@ -146,8 +147,19 @@ int main(int argc, char** argv)
         return 1;
     }
 
-  
-    Params params = Utility::createDefaultParams(onnxFileName);
+    // Parse int8 optimization argument
+    bool int8Optimization = false;
+    if (int8Arg == "true" || int8Arg == "1" || int8Arg == "yes") {
+        int8Optimization = true;
+    } else if (int8Arg == "false" || int8Arg == "0" || int8Arg == "no") {
+        int8Optimization = false;
+    } else {
+        cerr << "Error: Fourth argument must be 'true'/'false', '1'/'0', or 'yes'/'no'\n";
+        return 1;
+    }
+
+    Params params = Utility::createDefaultParams(onnxFileName, int8Optimization);
+    params.int8 = int8Optimization;
     cout << "Building Engine with params:\n"
           << "- ONNX file path: " << params.onnxFileName << "\n"
           << "- Engine file name: " << params.engineFileName << "\n"
