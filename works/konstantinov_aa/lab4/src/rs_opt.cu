@@ -22,7 +22,7 @@
 // ------------------ КОНСТАНТЫ / CONSTANTS ------------------
 constexpr int BLOCK_SIZE = 256;
 // 8 бит на проход (256 корзин)
-constexpr int RADIX_BITS = 11;
+constexpr int RADIX_BITS = 8;
 constexpr int RADIX = 256;
 constexpr int RADIX_MASK = 255;
 
