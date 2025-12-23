@@ -186,43 +186,69 @@ __global__ void scatter_kernel(const T* d_in, T* d_out,
                                const unsigned int* d_digit_bases, 
                                int n, int shift, int num_blocks) {
     
-    // Shared memory для хранения цифр блока (нужно для подсчета локального ранга)
-    __shared__ unsigned char s_digits[BLOCK_SIZE];
+    // Shared memory для хранения счетчиков цифр по варпам: [Warp][Digit]
+    // Размер: 8 варпов * 256 цифр * 4 байта = 8 КБ (вмещается в стандартные 48 КБ)
+    __shared__ unsigned int s_warp_counts[BLOCK_SIZE / 32][RADIX];
     
     int tid = threadIdx.x;
     int idx = blockIdx.x * blockDim.x + tid;
+    int lane = tid % 32;
+    int warp_id = tid / 32;
+
+    // Инициализация shared memory нулями
+    // Каждый поток обнуляет ~8 элементов (2048 / 256)
+    int total_smem = (BLOCK_SIZE / 32) * RADIX;
+    for (int i = tid; i < total_smem; i += blockDim.x) {
+        ((unsigned int*)s_warp_counts)[i] = 0;
+    }
+    __syncthreads();
     
     T val = 0;
-    unsigned int digit = 0;
+    unsigned int digit = 0xFFFFFFFF; // Маркер для неактивных потоков (чтобы не мешали подсчету 0..255)
     bool active = (idx < n);
 
     // Map: Загрузка
     if (active) {
         val = d_in[idx];
         digit = get_digit(val, shift);
-        s_digits[tid] = (unsigned char)digit;
-    } else {
-        s_digits[tid] = 255;
     }
-    __syncthreads();
+   
+    // 1. Warp-level counting (Считаем совпадения внутри варпа)
+    // __match_any_sync возвращает маску потоков в варпе, у которых 'digit' совпадает
+    unsigned int mask = __match_any_sync(0xFFFFFFFF, digit);
+    
+    // Ранг внутри варпа: сколько потоков с таким же digit имеют меньший lane ID
+    unsigned int rank_in_warp = __popc(mask & ((1U << lane) - 1));
+    
+    // Общее количество таких элементов в текущем варпе
+    unsigned int total_in_warp = __popc(mask);
+
+    // 2. Агрегация по варпам через Shared Memory
+    // Только первый встретившийся поток для каждой цифры в варпе пишет в SM
+    // (rank_in_warp == 0 гарантирует, что пишет только один поток для каждой уникальной цифры в варпе)
+    // Проверка digit < RADIX отсекает неактивные потоки
+    if (digit < RADIX && rank_in_warp == 0) {
+        s_warp_counts[warp_id][digit] = total_in_warp;
+    }
+    __syncthreads(); // Ждем, пока все варпы запишут свои счетчики
 
     if (!active) return;
 
-    // 1. Local Scan (Calculate Local Rank)
-    // Подсчитываем, сколько раз эта же цифра встречалась в блоке ДО текущего потока.
-    unsigned int local_rank = 0;
+    // 3. Подсчет глобального ранга в блоке
+    // Складываем количества из всех предыдущих варпов + позиция внутри своего варпа
+    unsigned int local_rank = rank_in_warp;
     #pragma unroll
-    for (int i = 0; i < tid; ++i) {
-        if (s_digits[i] == digit) local_rank++;
+    for (int w = 0; w < warp_id; ++w) {
+        local_rank += s_warp_counts[w][digit];
     }
 
-    // 2. Вычисление глобального адреса
+    // 4. Вычисление глобального адреса
     // GlobalPos = GlobalBase[digit] + BlockOffset[digit][block] + LocalRank
     unsigned int block_offset = d_offsets[digit * num_blocks + blockIdx.x];
     unsigned int global_base = d_digit_bases[digit];
     unsigned int global_pos = global_base + block_offset + local_rank;
 
-    // 3. Scatter: Запись
+    // 5. Scatter: Запись
     d_out[global_pos] = val;
 }
 
