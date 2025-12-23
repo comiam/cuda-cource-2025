@@ -11,8 +11,8 @@ __global__ void matrix_multiply_kernel_tiled(
     const int matrix_a_columns,
     const int matrix_b_columns)
 {
-    __shared__ float tile_a[TILE_SIZE][TILE_SIZE + 1];
-    __shared__ float tile_b[TILE_SIZE][TILE_SIZE + 1];
+    __shared__ float tile_a[TILE_SIZE][TILE_SIZE];
+    __shared__ float tile_b[TILE_SIZE][TILE_SIZE];
 
     int tx = threadIdx.x;
     int ty = threadIdx.y;
@@ -22,7 +22,8 @@ __global__ void matrix_multiply_kernel_tiled(
 
     float dot_product = 0.0f;
     const int num_tiles = (matrix_a_columns + TILE_SIZE - 1) / TILE_SIZE;
-
+    
+    #pragma unroll
     for (int tile_index = 0; tile_index < num_tiles; ++tile_index)
     {
         const int tiled_a_col = tile_index * TILE_SIZE + tx;
@@ -32,6 +33,7 @@ __global__ void matrix_multiply_kernel_tiled(
         tile_b[ty][tx] = matrix_b[tiled_b_row * matrix_b_columns + col];
         __syncthreads();
 
+        #pragma unroll
         for (int k = 0; k < TILE_SIZE; ++k)
             dot_product += tile_a[ty][k] * tile_b[k][tx];
 
