@@ -14,62 +14,30 @@ __global__ void sobel_kernel(
     int ty = threadIdx.y;
     int bx = blockIdx.x * blockDim.x + tx;
     int by = blockIdx.y * blockDim.y + ty;
+    int bx0 = blockIdx.x * blockDim.x;
+    int by0 = blockIdx.y * blockDim.y;
 
-    if (bx < width && by < height) {
-        shared_data[ty + 1][tx + 1] = input[by * width + bx];
-    } else {
-        shared_data[ty + 1][tx + 1] = 0;
-    }
+    int tid = ty * blockDim.x + tx;
+    int threads = blockDim.x * blockDim.y;
 
-    if (ty == 0) {
-        int y = by - 1;
-        if (y >= 0 && bx < width) {
-            shared_data[0][tx + 1] = input[y * width + bx];
-        } else {
-            shared_data[0][tx + 1] = 0;
-        }
-    }
-    if (ty == blockDim.y - 1) {
-        int y = by + 1;
-        if (y < height && bx < width) {
-            shared_data[ty + 2][tx + 1] = input[y * width + bx];
-        } else {
-            shared_data[ty + 2][tx + 1] = 0;
-        }
-    }
+    // +1 с каждой стороны
+    const int tile_width = blockDim.x + 2;
+    const int tile_height = blockDim.y + 2;
+    const int tile_size = tile_width * tile_height;
 
-    if (tx == 0) {
-        int x = bx - 1;
-        if (x >= 0 && by < height) {
-            shared_data[ty + 1][0] = input[by * width + x];
-        } else {
-            shared_data[ty + 1][0] = 0;
-        }
-    }
-    if (tx == blockDim.x - 1) {
-        int x = bx + 1;
-        if (x < width && by < height) {
-            shared_data[ty + 1][tx + 2] = input[by * width + x];
-        } else {
-            shared_data[ty + 1][tx + 2] = 0;
-        }
-    }
+    for (int i = tid; i < tile_size; i += threads) {
+        int tileY = i / tile_width;
+        int tileX = i % tile_width;
 
-    if (tx == 0 && ty == 0) {
-        int x = bx - 1, y = by - 1;
-        shared_data[0][0] = (x >= 0 && y >= 0) ? input[y * width + x] : 0;
-    }
-    if (tx == blockDim.x - 1 && ty == 0) {
-        int x = bx + 1, y = by - 1;
-        shared_data[0][tx + 2] = (x < width && y >= 0) ? input[y * width + x] : 0;
-    }
-    if (tx == 0 && ty == blockDim.y - 1) {
-        int x = bx - 1, y = by + 1;
-        shared_data[ty + 2][0] = (x >= 0 && y < height) ? input[y * width + x] : 0;
-    }
-    if (tx == blockDim.x - 1 && ty == blockDim.y - 1) {
-        int x = bx + 1, y = by + 1;
-        shared_data[ty + 2][tx + 2] = (x < width && y < height) ? input[y * width + x] : 0;
+        int gx = bx0 + tileX - 1;
+        int gy = by0 + tileY - 1;
+
+        unsigned char val = 0;
+        if (gx >= 0 && gx < (int)width && gy >= 0 && gy < (int)height) {
+            val = input[gy * width + gx];
+        }
+
+        shared_data[tileY][tileX] = val;
     }
 
     __syncthreads();
