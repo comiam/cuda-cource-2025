@@ -24,13 +24,13 @@ make
 ```
 Array size: 1000000
 
-CPU qsort time:     0.0821 sec
-GPU Radix Sort:     0.0156 sec
-GPU thrust::sort:   0.0038 sec
+CPU qsort time:     0.1434 sec
+GPU Radix Sort:     0.0082 sec
+GPU thrust::sort:   0.0009 sec
 
 Verification: PASSED
 
-Speedup vs CPU:     5.3x
+Speedup vs CPU:     17.5x
 ```
 
 ## Алгоритм
