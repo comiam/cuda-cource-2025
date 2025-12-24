@@ -55,22 +55,59 @@ __global__ void sobel_tiled_kernel(const byte* orig, byte* out, int width, int h
     int tx = threadIdx.x;
     int ty = threadIdx.y;
 
-    for (int sy = ty; sy < SHARED_WIDTH; sy += blockDim.y) {
-        for (int sx = tx; sx < SHARED_WIDTH; sx += blockDim.x) {
-            int gx = bx * blockDim.x + (sx - 1);
-            int gy = by * blockDim.y + (sy - 1);
-            unsigned char val = 0;
-            if (gx >= 0 && gx < width && gy >= 0 && gy < height) {
-                val = orig[gy * width + gx];
-            }
-            sdata[sy * SHARED_WIDTH + sx] = val;
-        }
+    int x = bx * blockDim.x + tx;
+    int y = by * blockDim.y + ty;
+
+    int s_idx = (ty + 1) * SHARED_WIDTH + (tx + 1);
+    if (x < width && y < height) {
+        sdata[s_idx] = orig[y * width + x];
+    } else {
+        sdata[s_idx] = 0;
+    }
+
+    if (tx == 0) {
+        int gx = x - 1;
+        unsigned char v = (gx >= 0 && y < height) ? orig[y * width + gx] : 0;
+        sdata[(ty + 1) * SHARED_WIDTH] = v;
+    }
+    if (tx == blockDim.x - 1) {
+        int gx = x + 1;
+        unsigned char v = (gx < width && y < height) ? orig[y * width + gx] : 0;
+        sdata[(ty + 1) * SHARED_WIDTH + (tx + 2)] = v;
+    }
+    if (ty == 0) {
+        int gy = y - 1;
+        unsigned char v = (gy >= 0 && x < width) ? orig[gy * width + x] : 0;
+        sdata[(tx + 1)] = v;
+    }
+    if (ty == blockDim.y - 1) {
+        int gy = y + 1;
+        unsigned char v = (gy < height && x < width) ? orig[gy * width + x] : 0;
+        sdata[(ty + 2) * SHARED_WIDTH + (tx + 1)] = v;
+    }
+
+    if (tx == 0 && ty == 0) {
+        int gx = x - 1, gy = y - 1;
+        unsigned char v = (gx >= 0 && gy >= 0) ? orig[gy * width + gx] : 0;
+        sdata[0] = v;
+    }
+    if (tx == blockDim.x - 1 && ty == 0) {
+        int gx = x + 1, gy = y - 1;
+        unsigned char v = (gx < width && gy >= 0) ? orig[gy * width + gx] : 0;
+        sdata[tx + 2] = v;
+    }
+    if (tx == 0 && ty == blockDim.y - 1) {
+        int gx = x - 1, gy = y + 1;
+        unsigned char v = (gx >= 0 && gy < height) ? orig[gy * width + gx] : 0;
+        sdata[(ty + 2) * SHARED_WIDTH] = v;
+    }
+    if (tx == blockDim.x - 1 && ty == blockDim.y - 1) {
+        int gx = x + 1, gy = y + 1;
+        unsigned char v = (gx < width && gy < height) ? orig[gy * width + gx] : 0;
+        sdata[(ty + 2) * SHARED_WIDTH + (tx + 2)] = v;
     }
 
     __syncthreads();
-
-    int x = bx * blockDim.x + tx;
-    int y = by * blockDim.y + ty;
 
     if (x > 0 && y > 0 && x < width - 1 && y < height - 1) {
         int sx_c = tx + 1;
@@ -88,7 +125,7 @@ __global__ void sobel_tiled_kernel(const byte* orig, byte* out, int width, int h
             }
         }
 
-        float mag = fabsf(dx) + fabsf(dy);
+        float mag = sqrtf(dx * dx + dy * dy);
         out[y * width + x] = static_cast<unsigned char>(fminf(mag, 255.0f));
     } else if (x < width && y < height) {
         out[y * width + x] = 0;
