@@ -4,8 +4,8 @@ LDFLAGS = -lcudart
 
 TARGET = radix_sort
 
-SOURCES = main.cu sort.cu
-HEADERS = sort.h utils.h
+SOURCES = src/main.cu src/sort.cu
+HEADERS = src/sort.h src/utils.h
 
 all: $(TARGET)
 
