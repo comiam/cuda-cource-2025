@@ -5,6 +5,7 @@
 #include <cstring>
 
 #define BLOCK_SIZE 16
+#define TILE_SIZE (BLOCK_SIZE + 2)
 
 #define CUDA_CHECK(call) \
     do { \
@@ -17,8 +18,59 @@
     } while(0)
 
 __global__ void sobelFilter(unsigned char* input, unsigned char* output, int width, int height) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    __shared__ double tile[TILE_SIZE][TILE_SIZE];
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int x = blockIdx.x * BLOCK_SIZE + tx;
+    int y = blockIdx.y * BLOCK_SIZE + ty;
+
+    int tileX = tx + 1;
+    int tileY = ty + 1;
+
+    int imgX = min(max(x, 0), width - 1);
+    int imgY = min(max(y, 0), height - 1);
+    tile[tileY][tileX] = input[imgY * width + imgX];
+
+    if (tx == 0) {
+        int leftX = min(max(x - 1, 0), width - 1);
+        tile[tileY][0] = input[imgY * width + leftX];
+    }
+    if (tx == BLOCK_SIZE - 1 || x == width - 1) {
+        int rightX = min(max(x + 1, 0), width - 1);
+        tile[tileY][tileX + 1] = input[imgY * width + rightX];
+    }
+    if (ty == 0) {
+        int topY = min(max(y - 1, 0), height - 1);
+        tile[0][tileX] = input[topY * width + imgX];
+    }
+    if (ty == BLOCK_SIZE - 1 || y == height - 1) {
+        int bottomY = min(max(y + 1, 0), height - 1);
+        tile[tileY + 1][tileX] = input[bottomY * width + imgX];
+    }
+
+    if (tx == 0 && ty == 0) {
+        int cornerX = min(max(x - 1, 0), width - 1);
+        int cornerY = min(max(y - 1, 0), height - 1);
+        tile[0][0] = input[cornerY * width + cornerX];
+    }
+    if ((tx == BLOCK_SIZE - 1 || x == width - 1) && ty == 0) {
+        int cornerX = min(max(x + 1, 0), width - 1);
+        int cornerY = min(max(y - 1, 0), height - 1);
+        tile[0][tileX + 1] = input[cornerY * width + cornerX];
+    }
+    if (tx == 0 && (ty == BLOCK_SIZE - 1 || y == height - 1)) {
+        int cornerX = min(max(x - 1, 0), width - 1);
+        int cornerY = min(max(y + 1, 0), height - 1);
+        tile[tileY + 1][0] = input[cornerY * width + cornerX];
+    }
+    if ((tx == BLOCK_SIZE - 1 || x == width - 1) && (ty == BLOCK_SIZE - 1 || y == height - 1)) {
+        int cornerX = min(max(x + 1, 0), width - 1);
+        int cornerY = min(max(y + 1, 0), height - 1);
+        tile[tileY + 1][tileX + 1] = input[cornerY * width + cornerX];
+    }
+
+    __syncthreads();
 
     if (x >= width || y >= height) return;
 
@@ -27,15 +79,15 @@ __global__ void sobelFilter(unsigned char* input, unsigned char* output, int wid
         return;
     }
 
-    int gx = -input[(y - 1) * width + (x - 1)] + input[(y - 1) * width + (x + 1)]
-           - 2 * input[y * width + (x - 1)]     + 2 * input[y * width + (x + 1)]
-           - input[(y + 1) * width + (x - 1)] + input[(y + 1) * width + (x + 1)];
+    double gx = -tile[tileY - 1][tileX - 1] + tile[tileY - 1][tileX + 1]
+               - 2.0 * tile[tileY][tileX - 1] + 2.0 * tile[tileY][tileX + 1]
+               - tile[tileY + 1][tileX - 1] + tile[tileY + 1][tileX + 1];
 
-    int gy = -input[(y - 1) * width + (x - 1)] - 2 * input[(y - 1) * width + x] - input[(y - 1) * width + (x + 1)]
-           + input[(y + 1) * width + (x - 1)] + 2 * input[(y + 1) * width + x] + input[(y + 1) * width + (x + 1)];
+    double gy = -tile[tileY - 1][tileX - 1] - 2.0 * tile[tileY - 1][tileX] - tile[tileY - 1][tileX + 1]
+               + tile[tileY + 1][tileX - 1] + 2.0 * tile[tileY + 1][tileX] + tile[tileY + 1][tileX + 1];
 
-    int magnitude = (int)sqrtf((float)(gx * gx + gy * gy));
-    output[y * width + x] = (magnitude > 255) ? 255 : magnitude;
+    double magnitude = sqrt(gx * gx + gy * gy);
+    output[y * width + x] = (magnitude > 255.0) ? 255 : (unsigned char)magnitude;
 }
 
 unsigned char* readPGM(const char* filename, int* width, int* height) {
@@ -147,4 +199,3 @@ int main(int argc, char** argv) {
 
     return 0;
 }
-
