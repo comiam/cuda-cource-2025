@@ -12,105 +12,26 @@ __global__ void sobel_filter(unsigned char* input, unsigned char* output, int wi
     __shared__ unsigned char tile_s[TILE + 2][TILE + 2];
 
     // Локальные координаты в тайле
-    int thread_x = threadIdx.x + 1;
-    int thread_y = threadIdx.y + 1;
+    int thread_x = threadIdx.x;
+    int thread_y = threadIdx.y;
     
     // Глобальные координаты в изображении
-    int x = blockIdx.x * TILE + threadIdx.x;
-    int y = blockIdx.y * TILE + threadIdx.y;
+    int x = blockIdx.x * TILE + threadIdx.x - 1;
+    int y = blockIdx.y * TILE + threadIdx.y - 1;
 
-    // Инциализирукем все элементы тайла нулями
-    tile_s[thread_y][thread_x] = 0;
-    if (threadIdx.x == 0) tile_s[thread_y][0] = 0;
-    if (threadIdx.x == TILE - 1) tile_s[thread_y][TILE + 1] = 0;
-    if (threadIdx.y == 0) tile_s[0][thread_x] = 0;
-    if (threadIdx.y == TILE - 1) tile_s[TILE + 1][thread_x] = 0;
-    if (threadIdx.x == 0 && threadIdx.y == 0) tile_s[0][0] = 0;
-    if (threadIdx.x == TILE - 1 && threadIdx.y == 0) tile_s[0][TILE + 1] = 0;
-    if (threadIdx.x == 0 && threadIdx.y == TILE - 1) tile_s[TILE + 1][0] = 0;
-    if (threadIdx.x == TILE - 1 && threadIdx.y == TILE - 1) tile_s[TILE + 1][TILE + 1] = 0;
-
-    __syncthreads();
-
-    // Загружаем цуентральный тайл
-    if (x < width && y < height) {
-        tile_s[thread_y][thread_x] = input[y * width + x];
-    }
-
-    // Загружаем границы
-    // Левая граница
-    if (threadIdx.x == 0) {
-        int apron_x = max(0, x - 1);
-        if (y < height && apron_x < width) {
-            tile_s[thread_y][0] = input[y * width + apron_x];
-        }
-    }
-
-    // Правая граница
-    if (threadIdx.x == TILE - 1) {
-        int apron_x = min(width - 1, x + 1);
-        if (y < height && apron_x < width) {
-            tile_s[thread_y][TILE + 1] = input[y * width + apron_x];
-        }
-    }
-
-    // Верхняя грница
-    if (threadIdx.y == 0) {
-        int apron_y = max(0, y - 1);
-        if (x < width && apron_y < height) {
-            tile_s[0][thread_x] = input[apron_y * width + x];
-        }
-    }
-
-    // Нижняя граница
-    if (threadIdx.y == TILE - 1) {
-        int apron_y = min(height - 1, y + 1);
-        if (x < width && apron_y < height) {
-            tile_s[TILE + 1][thread_x] = input[apron_y * width + x];
-        }
-    }
-
-    // Загружаем углы
-    // Векрхний левый угол
-    if (threadIdx.x == 0 && threadIdx.y == 0) {
-        int apron_x = max(0, x - 1);
-        int apron_y = max(0, y - 1);
-        if (apron_x < width && apron_y < height) {
-            tile_s[0][0] = input[apron_y * width + apron_x];
-        }
-    }
-
-    // Верхний правый угол
-    if (threadIdx.x == TILE - 1 && threadIdx.y == 0) {
-        int apron_x = min(width - 1, x + 1);
-        int apron_y = max(0, y - 1);
-        if (apron_x < width && apron_y < height) {
-            tile_s[0][TILE + 1] = input[apron_y * width + apron_x];
-        }
-    }
-
-    // Нижний левый угол
-    if (threadIdx.x == 0 && threadIdx.y == TILE - 1) {
-        int apron_x = max(0, x - 1);
-        int apron_y = min(height - 1, y + 1);
-        if (apron_x < width && apron_y < height) {
-            tile_s[TILE + 1][0] = input[apron_y * width + apron_x];
-        }
-    }
-
-    // Нижний правый угол
-    if (threadIdx.x == TILE - 1 && threadIdx.y == TILE - 1) {
-        int apron_x = min(width - 1, x + 1);
-        int apron_y = min(height - 1, y + 1);
-        if (apron_x < width && apron_y < height) {
-            tile_s[TILE + 1][TILE + 1] = input[apron_y * width + apron_x];
-        }
-    }
+	if (x >= 0 && x < width && y >= 0 && y < height) {
+		tile_s[thread_y][thread_x] = input[y * width + x];
+	} else {
+		tile_s[thread_y][thread_x] = 0;
+	}
 
     __syncthreads();
 
     // Вычисление градиента Собеля
-    if (x < width && y < height) {
+    if (thread_x > 0 && thread_x < TILE + 1 &&
+		thread_y > 0 && thread_y < TILE + 1 &&
+		x < width && y < height) {
+
         // Горизонтальный градиент Gx
         float gx = -1.0f * tile_s[thread_y - 1][thread_x - 1] + 1.0f * tile_s[thread_y - 1][thread_x + 1]
                    -2.0f * tile_s[thread_y][thread_x - 1]     + 2.0f * tile_s[thread_y][thread_x + 1]
@@ -160,7 +81,7 @@ int main(int argc, char* argv[]) {
 
 
     cudaMemcpy(d_input, host_input, image_size, cudaMemcpyHostToDevice);
-    dim3 block_size(TILE, TILE);
+    dim3 block_size(TILE + 2, TILE + 2);
     dim3 grid_size((width + TILE - 1) / TILE, (height + TILE - 1) / TILE);
 
     printf("Launching kernel: grid(%d, %d), block(%d, %d)\n", 
