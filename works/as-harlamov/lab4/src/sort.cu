@@ -2,6 +2,7 @@
 #include "utils.h"
 #include <cstdint>
 
+#define ZERO_BANK_CONFLICTS
 #define MAX_BLOCK_SIZE 128
 #define SHARED_MEMORY_BANKS 32
 #define LOG_SHARED_MEMORY_BANKS 5
@@ -11,7 +12,7 @@
 // что позволяет всем потокам обращаться к shared memory параллельно без задержек
 #ifdef ZERO_BANK_CONFLICTS
 #define BANK_CONFLICT_OFFSET(n) \
-    (((n) >> SHARED_MEMORY_BANKS) + ((n) >> (2 * LOG_SHARED_MEMORY_BANKS)))
+    (((n) >> LOG_SHARED_MEMORY_BANKS) + ((n) >> (2 * LOG_SHARED_MEMORY_BANKS)))
 #else
 #define BANK_CONFLICT_OFFSET(n) ((n) >> LOG_SHARED_MEMORY_BANKS)
 #endif
@@ -47,7 +48,7 @@ void compute_prefix_scan(unsigned int* const device_output,
     // Инициализируем shared memory нулями С УЧЕТОМ СМЕЩЕНИЯ для избежания банковых конфликтов
     shared_output[thread_id] = 0;
     shared_output[thread_id + blockDim.x] = 0;
-    shared_output[thread_id + blockDim.x + (blockDim.x >> LOG_SHARED_MEMORY_BANKS)] = 0;
+    shared_output[thread_id + blockDim.x + BANK_CONFLICT_OFFSET(thread_id + blockDim.x)] = 0;
 
     __syncthreads();
 
@@ -155,7 +156,9 @@ void parallel_prefix_sum(unsigned int* const device_output,
         grid_size += 1;
 
     // Вычисляем размер shared memory с учетом смещений для избежания банковых конфликтов
-    unsigned int shared_memory_size = max_elements_per_block + ((max_elements_per_block) >> LOG_SHARED_MEMORY_BANKS);
+    // Максимальный индекс = max_elements_per_block - 1, но для безопасности используем max_elements_per_block
+    unsigned int max_offset = BANK_CONFLICT_OFFSET(max_elements_per_block);
+    unsigned int shared_memory_size = max_elements_per_block + max_offset;
 
     // Выделяем память для хранения сумм каждого блока
     unsigned int* device_block_prefixes;
