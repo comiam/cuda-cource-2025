@@ -11,7 +11,7 @@
 // что позволяет всем потокам обращаться к shared memory параллельно без задержек
 #ifdef ZERO_BANK_CONFLICTS
 #define BANK_CONFLICT_OFFSET(n) \
-    ((n) >> SHARED_MEMORY_BANKS + (n) >> (2 * LOG_SHARED_MEMORY_BANKS))
+    (((n) >> SHARED_MEMORY_BANKS) + ((n) >> (2 * LOG_SHARED_MEMORY_BANKS)))
 #else
 #define BANK_CONFLICT_OFFSET(n) ((n) >> LOG_SHARED_MEMORY_BANKS)
 #endif
@@ -237,7 +237,7 @@ __global__ void local_radix_sort_step(T* device_output_sorted,
     T* device_input,
     unsigned int input_length,
     unsigned int max_elements_per_block) {
-    __shared__ unsigned int shared_memory[];
+    extern __shared__ unsigned int shared_memory[];
     T* shared_data = (T*)shared_memory;
     // Вычисляем смещение для масок и префиксных сумм
     unsigned int shared_data_size_uint = (max_elements_per_block * sizeof(T) + sizeof(unsigned int) - 1) / sizeof(unsigned int);
