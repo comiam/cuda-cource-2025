@@ -1,7 +1,15 @@
-build:
-	nvcc main.cu -o main
+NVCC = nvcc
+CXXFLAGS = -O2 -std=c++14 -arch=sm_70
+
+SOURCES = src/main.cu
+TARGET = main
+
+all: $(TARGET)
+
+$(TARGET): $(SOURCES)
+	$(NVCC) $(CXXFLAGS) -o $(TARGET) $(SOURCES)
 
 clean:
-	rm -rf main
+	rm -f $(TARGET) *.o
 
 .PHONY: all clean
