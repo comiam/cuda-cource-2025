@@ -261,7 +261,6 @@ void RetinaNet::drawDetections(cv::Mat& frame, const std::vector<Detection>& det
         const int thickness = 2;
         cv::rectangle(frame, cv::Point(x1, y1), cv::Point(x2, y2), color, thickness);
         
-        // Форматируем оценку до 2 знаков после запятой
         std::string score_str = std::to_string(det.score);
         const size_t dot_pos = score_str.find('.');
         if (dot_pos != std::string::npos) {
