@@ -46,7 +46,7 @@ double measure_time_microseconds(std::function<void()> function)
     return duration.count();
 }
 
-void make_benchmark(int matrix_size)
+void make_benchmark(int matrix_size, bool run_cpu_benchmark)
 {
     const int rows_a = matrix_size;
     const int cols_a = matrix_size;
@@ -103,9 +103,12 @@ void make_benchmark(int matrix_size)
     CUDA_CHECK(cudaMemcpyAsync(host_result_tiled, device_result_tiled, matrix_result_byte_size, cudaMemcpyDeviceToHost, stream_tiled));
     CUDA_CHECK(cudaEventRecord(stop_tiled, stream_tiled));
 
-    double cpu_time_us = measure_time_microseconds([&]() {
-        matrix_multiply_cpu(host_matrix_a, host_matrix_b, host_result_cpu, rows_a, cols_a, cols_b);
-    });
+    double cpu_time_us = 0.0;
+    if (run_cpu_benchmark) {
+        cpu_time_us = measure_time_microseconds([&]() {
+            matrix_multiply_cpu(host_matrix_a, host_matrix_b, host_result_cpu, rows_a, cols_a, cols_b);
+        });
+    }
 
     CUDA_CHECK(cudaStreamSynchronize(stream_basic));
     CUDA_CHECK(cudaStreamSynchronize(stream_tiled));
@@ -114,15 +117,26 @@ void make_benchmark(int matrix_size)
     CUDA_CHECK(cudaEventElapsedTime(&ms_basic, start_basic, stop_basic));
     CUDA_CHECK(cudaEventElapsedTime(&ms_tiled, start_tiled, stop_tiled));
 
-    bool basic_correct = compare_matrices(host_result_cpu, host_result_basic, rows_a, cols_b);
-    bool tiled_correct = compare_matrices(host_result_cpu, host_result_tiled, rows_a, cols_b);
+    bool basic_correct = true;
+    bool tiled_correct = true;
+    
+    if (run_cpu_benchmark) {
+        basic_correct = compare_matrices(host_result_cpu, host_result_basic, rows_a, cols_b);
+        tiled_correct = compare_matrices(host_result_cpu, host_result_tiled, rows_a, cols_b);
+    }
 
     double ms_basic_us = ms_basic * 1000.0;
     double ms_tiled_us = ms_tiled * 1000.0;
 
-    printf("  CPU:        %8.0f us\n", cpu_time_us);
-    printf("  CUDA Basic: %8.0f us (%.2fx speedup) [%s]\n", ms_basic_us, cpu_time_us / ms_basic_us, basic_correct ? "OK" : "FAIL");
-    printf("  CUDA Tiled: %8.0f us (%.2fx speedup) [%s]\n", ms_tiled_us, cpu_time_us / ms_tiled_us, tiled_correct ? "OK" : "FAIL");
+    if (run_cpu_benchmark) {
+        printf("  CPU:        %8.0f us\n", cpu_time_us);
+        printf("  CUDA Basic: %8.0f us (%.2fx speedup) [%s]\n", ms_basic_us, cpu_time_us / ms_basic_us, basic_correct ? "OK" : "FAIL");
+        printf("  CUDA Tiled: %8.0f us (%.2fx speedup) [%s]\n", ms_tiled_us, cpu_time_us / ms_tiled_us, tiled_correct ? "OK" : "FAIL");
+    } else {
+        printf("  CPU:        SKIPPED\n");
+        printf("  CUDA Basic: %8.0f us\n", ms_basic_us);
+        printf("  CUDA Tiled: %8.0f us\n", ms_tiled_us);
+    }
 
     CUDA_CHECK(cudaFreeHost(host_matrix_a));
     CUDA_CHECK(cudaFreeHost(host_matrix_b));
@@ -146,20 +160,27 @@ void make_benchmark(int matrix_size)
 
 int main(int argc, char* argv[])
 {
-    std::vector<int> benchmark_sizes = {64, 128, 256, 512, 1024};
+    std::vector<int> benchmark_sizes = {64, 128, 256, 512, 1024, 2048};
+    bool skip_cpu_flag = false;
 
-    if (argc > 1)
-    {
-        int size = atoi(argv[1]);
-        make_benchmark(size);
-    }
-    else
-    {
-        for (int size : benchmark_sizes)
-        {
-            make_benchmark(size);
-            printf("\n");
+    if (argc > 1) {
+        if (strcmp(argv[1], "--skip-cpu") == 0) {
+            skip_cpu_flag = true;
+        } else {
+            int size = atoi(argv[1]);
+            if (size > 0) {
+                make_benchmark(size, true); 
+                return 0;
+            }
         }
+    }
+
+    for (int size : benchmark_sizes)
+    {
+        bool run_cpu = !skip_cpu_flag && (size <= 1024);
+        
+        make_benchmark(size, run_cpu);
+        printf("\n");
     }
 
     return 0;
