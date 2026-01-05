@@ -22,63 +22,59 @@ __global__ void sobelKernel(unsigned char* input, unsigned char* output, int wid
     int x = blockIdx.x * TILE_SIZE + tx;
     int y = blockIdx.y * TILE_SIZE + ty;
     
+    tile[ty + 1][tx + 1] = 0;
+    if (tx == 0) tile[ty + 1][0] = 0;
+    if (tx == TILE_SIZE - 1) tile[ty + 1][TILE_SIZE + 1] = 0;
+    if (ty == 0) tile[0][tx + 1] = 0;
+    if (ty == TILE_SIZE - 1) tile[TILE_SIZE + 1][tx + 1] = 0;
+    if (tx == 0 && ty == 0) tile[0][0] = 0;
+    if (tx == TILE_SIZE - 1 && ty == 0) tile[0][TILE_SIZE + 1] = 0;
+    if (tx == 0 && ty == TILE_SIZE - 1) tile[TILE_SIZE + 1][0] = 0;
+    if (tx == TILE_SIZE - 1 && ty == TILE_SIZE - 1) tile[TILE_SIZE + 1][TILE_SIZE + 1] = 0;
+    
     if (x < width && y < height) {
         tile[ty + 1][tx + 1] = input[y * width + x];
     }
     
-    if (tx == 0) {
+    if (tx == 0 && y < height) {
         int halo_x = max(0, x - 1);
-        if (y < height) {
-            tile[ty + 1][0] = input[y * width + halo_x];
-        }
+        tile[ty + 1][0] = input[y * width + halo_x];
     }
     
-    if (tx == TILE_SIZE - 1) {
+    if (tx == TILE_SIZE - 1 && y < height) {
         int halo_x = min(width - 1, x + 1);
-        if (y < height) {
-            tile[ty + 1][TILE_SIZE + 1] = input[y * width + halo_x];
-        }
+        tile[ty + 1][TILE_SIZE + 1] = input[y * width + halo_x];
     }
     
-    if (ty == 0) {
+    if (ty == 0 && x < width) {
         int halo_y = max(0, y - 1);
-        if (x < width) {
-            tile[0][tx + 1] = input[halo_y * width + x];
-        }
+        tile[0][tx + 1] = input[halo_y * width + x];
     }
     
-    if (ty == TILE_SIZE - 1) {
+    if (ty == TILE_SIZE - 1 && x < width) {
         int halo_y = min(height - 1, y + 1);
-        if (x < width) {
-            tile[TILE_SIZE + 1][tx + 1] = input[halo_y * width + x];
-        }
+        tile[TILE_SIZE + 1][tx + 1] = input[halo_y * width + x];
     }
     
-    if (tx == 0 && ty == 0) {
-        int halo_x = max(0, x - 1);
-        int halo_y = max(0, y - 1);
-        tile[0][0] = input[halo_y * width + halo_x];
+    if (tx == 0 && ty == 0 && x > 0 && y > 0) {
+        tile[0][0] = input[(y - 1) * width + (x - 1)];
     }
-    if (tx == TILE_SIZE - 1 && ty == 0) {
-        int halo_x = min(width - 1, x + 1);
-        int halo_y = max(0, y - 1);
-        tile[0][TILE_SIZE + 1] = input[halo_y * width + halo_x];
+    if (tx == TILE_SIZE - 1 && ty == 0 && x < width - 1 && y > 0) {
+        tile[0][TILE_SIZE + 1] = input[(y - 1) * width + (x + 1)];
     }
-    if (tx == 0 && ty == TILE_SIZE - 1) {
-        int halo_x = max(0, x - 1);
-        int halo_y = min(height - 1, y + 1);
-        tile[TILE_SIZE + 1][0] = input[halo_y * width + halo_x];
+    if (tx == 0 && ty == TILE_SIZE - 1 && x > 0 && y < height - 1) {
+        tile[TILE_SIZE + 1][0] = input[(y + 1) * width + (x - 1)];
     }
-    if (tx == TILE_SIZE - 1 && ty == TILE_SIZE - 1) {
-        int halo_x = min(width - 1, x + 1);
-        int halo_y = min(height - 1, y + 1);
-        tile[TILE_SIZE + 1][TILE_SIZE + 1] = input[halo_y * width + halo_x];
+    if (tx == TILE_SIZE - 1 && ty == TILE_SIZE - 1 && x < width - 1 && y < height - 1) {
+        tile[TILE_SIZE + 1][TILE_SIZE + 1] = input[(y + 1) * width + (x + 1)];
     }
     
     __syncthreads();
     
+    // Early exit for out-of-bounds pixels
     if (x >= width || y >= height) return;
     
+    // Skip edge pixels - no halo loading wasted since we already returned for OOB
     if (x == 0 || x == width - 1 || y == 0 || y == height - 1) {
         output[y * width + x] = 0;
         return;
