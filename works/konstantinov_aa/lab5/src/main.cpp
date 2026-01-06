@@ -7,17 +7,64 @@
 #include <filesystem>
 #include <cctype>
 #include <cstdlib>
+#include <cstdio>
+#include <stdexcept>
 
 #include <opencv2/opencv.hpp>
 #include <cuda_runtime_api.h>
+#include <cuda_fp16.h>
 #include <NvInfer.h>
 #include <NvInferPlugin.h>
 
 #include "lab5_types.h"
 #include "postprocess_gpu.h"
 
+// Макрос для проверки ошибок CUDA (версия с исключением для C++ кода)
+#define CUDA_CHECK(expr)                                                     \
+    do {                                                                    \
+        cudaError_t err = (expr);                                           \
+        if (err != cudaSuccess) {                                           \
+            fprintf(stderr, "CUDA error %s:%d: %s\n",                       \
+                    __FILE__, __LINE__, cudaGetErrorString(err));           \
+            throw std::runtime_error(cudaGetErrorString(err));              \
+        }                                                                   \
+    } while (0)
+
 using namespace nvinfer1;
 namespace fs = std::filesystem;
+
+// Вспомогательная функция для получения размера элемента по типу данных TensorRT
+static size_t getElementSize(DataType dtype) {
+    switch (dtype) {
+        case DataType::kFLOAT: return 4;
+        case DataType::kHALF:  return 2;
+        case DataType::kINT8:  return 1;
+        case DataType::kINT32: return 4;
+        case DataType::kBOOL:  return 1;
+        case DataType::kUINT8: return 1;
+        case DataType::kFP8:   return 1;
+        case DataType::kBF16:  return 2;
+        case DataType::kINT64: return 8;
+        case DataType::kINT4:  return 1; // упрощённо
+        default: return 4; // fallback to float
+    }
+}
+
+static const char* dataTypeToString(DataType dtype) {
+    switch (dtype) {
+        case DataType::kFLOAT: return "FP32";
+        case DataType::kHALF:  return "FP16";
+        case DataType::kINT8:  return "INT8";
+        case DataType::kINT32: return "INT32";
+        case DataType::kBOOL:  return "BOOL";
+        case DataType::kUINT8: return "UINT8";
+        case DataType::kFP8:   return "FP8";
+        case DataType::kBF16:  return "BF16";
+        case DataType::kINT64: return "INT64";
+        case DataType::kINT4:  return "INT4";
+        default: return "UNKNOWN";
+    }
+}
 
 // Logger for TensorRT
 class Logger : public ILogger {
@@ -132,12 +179,15 @@ static void draw_detections(cv::Mat& img, const std::vector<Detection>& dets, co
 class RetinaNetDetector {
 public:
     //constructor for RetinaNetDetector
-    RetinaNetDetector(const std::string& enginePath) {
+    RetinaNetDetector(const std::string& enginePath) : stream(nullptr) {
         initLibNvInferPlugins(&gLogger, "");
         loadEngine(enginePath);
+        CUDA_CHECK(cudaStreamCreate(&stream));
     }
     //destructor for RetinaNetDetector
     ~RetinaNetDetector() {
+        // Destroy CUDA stream
+        if (stream) cudaStreamDestroy(stream);
         // Free all buffers
         for (void* buf : buffers) {
             if (buf) cudaFree(buf);
@@ -156,16 +206,38 @@ public:
         // We already did this in loadEngine but let's ensure.
         // context->setTensorAddress is persistent.
         
-        // Copy input to device
-        cudaMemcpy(buffers[inputIndex], hostInputBuffer, inputSize, cudaMemcpyHostToDevice);
-        
-        
-        cudaStream_t stream;
-        cudaStreamCreate(&stream);
+        // Copy input to device with proper type conversion (асинхронно в stream)
+        if (inputDtype == DataType::kFLOAT) {
+            // FP32: прямое копирование
+            CUDA_CHECK(cudaMemcpyAsync(buffers[inputIndex], hostInputBuffer, inputSize, cudaMemcpyHostToDevice, stream));
+        } else if (inputDtype == DataType::kHALF) {
+            // FP16: конвертируем на CPU, затем копируем
+            std::vector<__half> fp16Buffer(inputNumElements);
+            for (size_t i = 0; i < inputNumElements; ++i) {
+                fp16Buffer[i] = __float2half(hostInputBuffer[i]);
+            }
+            CUDA_CHECK(cudaMemcpyAsync(buffers[inputIndex], fp16Buffer.data(), inputSize, cudaMemcpyHostToDevice, stream));
+            cudaStreamSynchronize(stream); // Ждём завершения, т.к. fp16Buffer локальный
+        } else if (inputDtype == DataType::kINT8) {
+            // INT8: простая квантизация (scale=1/127, zero_point=0)
+            // В реальности нужно использовать calibration scale из движка
+            std::vector<int8_t> int8Buffer(inputNumElements);
+            for (size_t i = 0; i < inputNumElements; ++i) {
+                float val = hostInputBuffer[i] * 127.0f;
+                val = std::max(-127.0f, std::min(127.0f, val));
+                int8Buffer[i] = static_cast<int8_t>(val);
+            }
+            CUDA_CHECK(cudaMemcpyAsync(buffers[inputIndex], int8Buffer.data(), inputSize, cudaMemcpyHostToDevice, stream));
+            cudaStreamSynchronize(stream); // Ждём завершения, т.к. int8Buffer локальный
+            std::cerr << "[WARN] INT8 input: using naive quantization (scale=127). "
+                      << "For best results, use engine with FP32 input." << std::endl;
+        } else {
+            // Fallback: копируем как FP32 (может не работать)
+            std::cerr << "[WARN] Unsupported input dtype, copying as FP32" << std::endl;
+            CUDA_CHECK(cudaMemcpyAsync(buffers[inputIndex], hostInputBuffer, inputNumElements * sizeof(float), cudaMemcpyHostToDevice, stream));
+        }
         
         context->enqueueV3(stream);
-        cudaStreamSynchronize(stream);
-        cudaStreamDestroy(stream);
         
         // 3. Postprocess
         std::vector<Detection> detections;
@@ -173,16 +245,21 @@ public:
         // If engine provides NMS plugin outputs, numDetsIndex will be set.
         // Otherwise, we expect raw outputs: cls_logits + bbox_regression.
         if (numDetsIndex >= 0) {
+            // Синхронизация перед чтением результатов
+            cudaStreamSynchronize(stream);
+            
             int numDetections = 0;
-            cudaMemcpy(&numDetections, buffers[numDetsIndex], sizeof(int), cudaMemcpyDeviceToHost);
+            CUDA_CHECK(cudaMemcpyAsync(&numDetections, buffers[numDetsIndex], sizeof(int), cudaMemcpyDeviceToHost, stream));
+            cudaStreamSynchronize(stream); // Нужно знать numDetections для выделения векторов
 
             std::vector<float> boxes(numDetections * 4);
             std::vector<float> scores(numDetections);
             std::vector<float> classes(numDetections);
 
-            cudaMemcpy(boxes.data(), buffers[boxesIndex], numDetections * 4 * sizeof(float), cudaMemcpyDeviceToHost);
-            cudaMemcpy(scores.data(), buffers[scoresIndex], numDetections * sizeof(float), cudaMemcpyDeviceToHost);
-            cudaMemcpy(classes.data(), buffers[classesIndex], numDetections * sizeof(float), cudaMemcpyDeviceToHost);
+            CUDA_CHECK(cudaMemcpyAsync(boxes.data(), buffers[boxesIndex], numDetections * 4 * sizeof(float), cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaMemcpyAsync(scores.data(), buffers[scoresIndex], numDetections * sizeof(float), cudaMemcpyDeviceToHost, stream));
+            CUDA_CHECK(cudaMemcpyAsync(classes.data(), buffers[classesIndex], numDetections * sizeof(float), cudaMemcpyDeviceToHost, stream));
+            cudaStreamSynchronize(stream); // Ждём завершения всех копирований
 
             for (int i = 0; i < numDetections; ++i) {
                 if (scores[i] >= confThreshold) {
@@ -264,10 +341,13 @@ private:
     std::shared_ptr<ICudaEngine> engine;
     std::shared_ptr<IExecutionContext> context;
     std::vector<void*> buffers;
+    cudaStream_t stream;  // Переиспользуемый CUDA stream для инференса
     
     int inputIndex, numDetsIndex, boxesIndex, scoresIndex, classesIndex;
-    size_t inputSize;
+    size_t inputSize;          // размер входного буфера в байтах (с учётом типа данных движка)
+    size_t inputNumElements;   // кол-во элементов входа (C*H*W)
     int inputH, inputW, inputC;
+    DataType inputDtype = DataType::kFLOAT;
     std::string clsTensorName;
     std::string bboxTensorName;
     int rawNumClasses = -1;
@@ -284,7 +364,7 @@ private:
         file.read(trtModelStream.data(), size);
         file.close();
 
-        std::unique_ptr<IRuntime> runtime{createInferRuntime(gLogger)};
+        std::unique_ptr<IRuntime, void(*)(IRuntime*)> runtime{createInferRuntime(gLogger), [](IRuntime* r){ delete r; }};
         // TRT 10: deserializeCudaEngine returns ICudaEngine* which we delete manually
         engine = std::shared_ptr<ICudaEngine>(runtime->deserializeCudaEngine(trtModelStream.data(), size), [](ICudaEngine* e){ delete e; });
         if (!engine) throw std::runtime_error("Failed to deserialize engine");
@@ -310,7 +390,16 @@ private:
                 inputH = dims.d[2];
                 inputW = dims.d[3];
                 inputC = dims.d[1];
-                inputSize = inputC * inputH * inputW * sizeof(float);
+                inputNumElements = (size_t)inputC * inputH * inputW;
+                
+                // Учитываем реальный тип данных тензора (FP32/FP16/INT8)
+                inputDtype = engine->getTensorDataType(name);
+                size_t elemSize = getElementSize(inputDtype);
+                inputSize = inputNumElements * elemSize;
+                
+                std::cout << "[TRT] Input tensor '" << name << "' dtype: " << dataTypeToString(inputDtype) 
+                          << ", shape: [1," << inputC << "," << inputH << "," << inputW << "]" << std::endl;
+                
                 cudaMalloc(&buffers[i], inputSize);
                 context->setTensorAddress(name, buffers[i]);
             } else {
@@ -333,16 +422,38 @@ private:
                     bboxTensorName = name;
                 }
                 
-                // Allocate based on shape
+                // Allocate based on shape and actual data type
+                // Для динамических размеров используем максимальные из профиля оптимизации
                 auto dims = engine->getTensorShape(name);
+                DataType dtype = engine->getTensorDataType(name);
+                size_t elemSize = getElementSize(dtype);
+                
                 size_t vol = 1;
+                bool hasDynamic = false;
                 for(int d=0; d<dims.nbDims; ++d) {
-                    int dim = dims.d[d];
-                    if (dim == -1) dim = 1; // Batch size 1 assumption
-                    vol *= dim;
+                    if (dims.d[d] == -1) {
+                        hasDynamic = true;
+                        break;
+                    }
                 }
-                cudaMalloc(&buffers[i], vol * sizeof(float));
+                
+                if (hasDynamic) {
+                    // Получаем максимальные размеры из профиля оптимизации
+                    int profileIdx = context->getOptimizationProfile();
+                    auto maxDims = engine->getProfileShape(name, profileIdx, OptProfileSelector::kMAX);
+                    for(int d=0; d<maxDims.nbDims; ++d) {
+                        vol *= (maxDims.d[d] > 0) ? maxDims.d[d] : 1;
+                    }
+                } else {
+                    for(int d=0; d<dims.nbDims; ++d) {
+                        vol *= dims.d[d];
+                    }
+                }
+                
+                cudaMalloc(&buffers[i], vol * elemSize);
                 context->setTensorAddress(name, buffers[i]);
+                
+                std::cout << "[TRT] Output tensor '" << name << "' dtype: " << dataTypeToString(dtype) << std::endl;
             }
         }
         

@@ -8,6 +8,19 @@
 #include <thrust/sequence.h>
 
 #include <cmath>
+#include <cstdio>
+#include <stdexcept>
+
+// Макрос для проверки ошибок CUDA (версия с исключением для C++ кода)
+#define CUDA_CHECK(expr)                                                     \
+    do {                                                                    \
+        cudaError_t err = (expr);                                           \
+        if (err != cudaSuccess) {                                           \
+            fprintf(stderr, "CUDA error %s:%d: %s\n",                       \
+                    __FILE__, __LINE__, cudaGetErrorString(err));           \
+            throw std::runtime_error(cudaGetErrorString(err));              \
+        }                                                                   \
+    } while (0)
 
 struct Candidate {
     float x1, y1, x2, y2;
@@ -72,11 +85,11 @@ static void update_anchor_meta_if_needed(int inputW, int inputH) {
         offsets_h[l + 1] = offsets_h[l] + anchorsL;
     }
 
-    cudaMemcpyToSymbol(c_stride, stride_h, sizeof(stride_h));
-    cudaMemcpyToSymbol(c_baseSize, baseSize_h, sizeof(baseSize_h));
-    cudaMemcpyToSymbol(c_featW, featW_h, sizeof(featW_h));
-    cudaMemcpyToSymbol(c_featH, featH_h, sizeof(featH_h));
-    cudaMemcpyToSymbol(c_level_offsets, offsets_h, sizeof(offsets_h));
+    CUDA_CHECK(cudaMemcpyToSymbol(c_stride, stride_h, sizeof(stride_h)));
+    CUDA_CHECK(cudaMemcpyToSymbol(c_baseSize, baseSize_h, sizeof(baseSize_h)));
+    CUDA_CHECK(cudaMemcpyToSymbol(c_featW, featW_h, sizeof(featW_h)));
+    CUDA_CHECK(cudaMemcpyToSymbol(c_featH, featH_h, sizeof(featH_h)));
+    CUDA_CHECK(cudaMemcpyToSymbol(c_level_offsets, offsets_h, sizeof(offsets_h)));
 
     lastW = inputW;
     lastH = inputH;
@@ -266,7 +279,7 @@ std::vector<Detection> retinanet_postprocess_gpu(
     );
 
     int h_count = 0;
-    cudaMemcpy(&h_count, d_count, sizeof(int), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(&h_count, d_count, sizeof(int), cudaMemcpyDeviceToHost));
     if (h_count <= 0) {
         cudaFree(d_cand);
         cudaFree(d_count);
@@ -293,8 +306,8 @@ std::vector<Detection> retinanet_postprocess_gpu(
     // Copy back topK candidates + suppression flags and compact on host (small)
     std::vector<Candidate> h_cand(n);
     std::vector<int> h_supp(n);
-    cudaMemcpy(h_cand.data(), d_cand, sizeof(Candidate) * n, cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_supp.data(), d_supp, sizeof(int) * n, cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_cand.data(), d_cand, sizeof(Candidate) * n, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_supp.data(), d_supp, sizeof(int) * n, cudaMemcpyDeviceToHost));
 
     std::vector<Detection> out;
     out.reserve(256);
