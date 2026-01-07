@@ -53,13 +53,13 @@ __global__ void preprocess_kernel(
     int x1 = x0 + 1;
     int y1 = y0 + 1;
     
+    const float wx = src_x - x0;
+    const float wy = src_y - y0;
+    
     x0 = clamp(x0, 0, src_width);
     y0 = clamp(y0, 0, src_height);
     x1 = clamp(x1, 0, src_width);
     y1 = clamp(y1, 0, src_height);
-    
-    const float wx = src_x - x0;
-    const float wy = src_y - y0;
     
     // BGR->RGB conversion: BGR channels (B=0, G=1, R=2) -> RGB output (R=0, G=1, B=2)
     const int bgr_channel = (dst_c == 0) ? 2 : (dst_c == 1) ? 1 : 0;
@@ -75,7 +75,7 @@ __global__ void preprocess_kernel(
                               wx * wy * p11;
     
     const int output_idx = dst_c * dst_height * dst_width + dst_y * dst_width + dst_x;
-    dst[output_idx] = interpolated / 255.0f;
+    dst[output_idx] = interpolated / PIXEL_NORMALIZATION;
 }
 
 RetinaNet::RetinaNet(const std::string& engine_path, const std::string& labels_path, float conf_threshold)
@@ -226,11 +226,10 @@ std::vector<Detection> RetinaNet::infer(const cv::Mat& frame) {
     CUDA_CHECK(cudaMemcpy(h_scores.data(), d_scores, scores_size, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(h_labels.data(), d_labels, labels_size, cudaMemcpyDeviceToHost));
     
-    int num_detections = MAX_DETECTIONS;
+    int num_detections = 0;
     for (int i = 0; i < MAX_DETECTIONS; ++i) {
-        if (h_scores[i] <= 0.0f) {
-            num_detections = i;
-            break;
+        if (h_scores[i] > 0.0f) {
+            num_detections++;
         }
     }
     
