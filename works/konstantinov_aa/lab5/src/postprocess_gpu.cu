@@ -4,6 +4,7 @@
 #include <thrust/sort.h>
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
+#include <thrust/system/cuda/execution_policy.h>
 #include <thrust/copy.h>
 #include <thrust/sequence.h>
 
@@ -85,11 +86,12 @@ static void update_anchor_meta_if_needed(int inputW, int inputH) {
         offsets_h[l + 1] = offsets_h[l] + anchorsL;
     }
 
-    CUDA_CHECK(cudaMemcpyToSymbol(c_stride, stride_h, sizeof(stride_h)));
-    CUDA_CHECK(cudaMemcpyToSymbol(c_baseSize, baseSize_h, sizeof(baseSize_h)));
-    CUDA_CHECK(cudaMemcpyToSymbol(c_featW, featW_h, sizeof(featW_h)));
-    CUDA_CHECK(cudaMemcpyToSymbol(c_featH, featH_h, sizeof(featH_h)));
-    CUDA_CHECK(cudaMemcpyToSymbol(c_level_offsets, offsets_h, sizeof(offsets_h)));
+    // sizeof от целевых переменных для типобезопасности
+    CUDA_CHECK(cudaMemcpyToSymbol(c_stride, stride_h, sizeof(c_stride)));
+    CUDA_CHECK(cudaMemcpyToSymbol(c_baseSize, baseSize_h, sizeof(c_baseSize)));
+    CUDA_CHECK(cudaMemcpyToSymbol(c_featW, featW_h, sizeof(c_featW)));
+    CUDA_CHECK(cudaMemcpyToSymbol(c_featH, featH_h, sizeof(c_featH)));
+    CUDA_CHECK(cudaMemcpyToSymbol(c_level_offsets, offsets_h, sizeof(c_level_offsets)));
 
     lastW = inputW;
     lastH = inputH;
@@ -258,18 +260,22 @@ std::vector<Detection> retinanet_postprocess_gpu(
         return {};
     }
 
+    // Создаём stream для асинхронных операций
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+
     float scaleX = (float)origW / (float)inputW;
     float scaleY = (float)origH / (float)inputH;
 
     Candidate* d_cand = nullptr;
     int* d_count = nullptr;
-    cudaMalloc(&d_cand, sizeof(Candidate) * maxCandidates);
-    cudaMalloc(&d_count, sizeof(int));
-    cudaMemset(d_count, 0, sizeof(int));
+    CUDA_CHECK(cudaMalloc(&d_cand, sizeof(Candidate) * maxCandidates));
+    CUDA_CHECK(cudaMalloc(&d_count, sizeof(int)));
+    CUDA_CHECK(cudaMemsetAsync(d_count, 0, sizeof(int), stream));
 
     int block = 256;
     int grid = (numAnchors + block - 1) / block;
-    k_decode_and_filter<<<grid, block>>>(
+    k_decode_and_filter<<<grid, block, 0, stream>>>(
         d_cls_logits, d_bbox_deltas,
         numAnchors, numClasses,
         confThreshold,
@@ -278,36 +284,43 @@ std::vector<Detection> retinanet_postprocess_gpu(
         d_cand, maxCandidates, d_count
     );
 
+    // Синхронизируем stream перед чтением счётчика (нужен результат на хосте)
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
     int h_count = 0;
     CUDA_CHECK(cudaMemcpy(&h_count, d_count, sizeof(int), cudaMemcpyDeviceToHost));
     if (h_count <= 0) {
         cudaFree(d_cand);
         cudaFree(d_count);
+        cudaStreamDestroy(stream);
         return {};
     }
     if (h_count > maxCandidates) h_count = maxCandidates;
 
-    // Sort candidates by score desc (device)
+    // Sort candidates by score desc (device) в stream
     thrust::device_ptr<Candidate> cand_begin(d_cand);
     thrust::device_ptr<Candidate> cand_end(d_cand + h_count);
-    thrust::sort(thrust::device, cand_begin, cand_end, CandidateScoreGreater{});
+    thrust::sort(thrust::cuda::par.on(stream), cand_begin, cand_end, CandidateScoreGreater{});
 
     // Keep only topK for NMS to keep O(N^2) reasonable
     int n = h_count;
     if (topK > 0 && n > topK) n = topK;
 
     int* d_supp = nullptr;
-    cudaMalloc(&d_supp, sizeof(int) * n);
-    k_init_int<<<(n + 255) / 256, 256>>>(d_supp, n, 0);
+    CUDA_CHECK(cudaMalloc(&d_supp, sizeof(int) * n));
+    k_init_int<<<(n + 255) / 256, 256, 0, stream>>>(d_supp, n, 0);
 
     dim3 grid2(n, (n + 255) / 256);
-    k_nms_suppress<<<grid2, 256>>>(d_cand, n, nmsThreshold, d_supp);
+    k_nms_suppress<<<grid2, 256, 0, stream>>>(d_cand, n, nmsThreshold, d_supp);
 
-    // Copy back topK candidates + suppression flags and compact on host (small)
+    // Copy back topK candidates + suppression flags (асинхронно)
     std::vector<Candidate> h_cand(n);
     std::vector<int> h_supp(n);
-    CUDA_CHECK(cudaMemcpy(h_cand.data(), d_cand, sizeof(Candidate) * n, cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_supp.data(), d_supp, sizeof(int) * n, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpyAsync(h_cand.data(), d_cand, sizeof(Candidate) * n, cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaMemcpyAsync(h_supp.data(), d_supp, sizeof(int) * n, cudaMemcpyDeviceToHost, stream));
+
+    // Синхронизируем перед использованием данных на хосте
+    CUDA_CHECK(cudaStreamSynchronize(stream));
 
     std::vector<Detection> out;
     out.reserve(256);
@@ -326,6 +339,7 @@ std::vector<Detection> retinanet_postprocess_gpu(
     cudaFree(d_supp);
     cudaFree(d_cand);
     cudaFree(d_count);
+    cudaStreamDestroy(stream);
     return out;
 }
 
