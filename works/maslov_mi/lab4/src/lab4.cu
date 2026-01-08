@@ -32,29 +32,14 @@ static void print_sample(const std::vector<uint32_t>& v, const char* label, size
 // }
 
 __global__
-void histogram_shared_atomic(const uint32_t* data, int n, unsigned int* hist)
+void histogram_atomic(const uint32_t* data, int n, unsigned int* hist)
 {
-    extern __shared__ unsigned int shist[];
-
-    int t = threadIdx.x;
-
-    for (int bin = t; bin < HIST_BINS; bin += blockDim.x)
-        shist[bin] = 0;
-    __syncthreads();
-
-    int idx = blockIdx.x * blockDim.x + t;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
 
     for (int i = idx; i < n; i += stride) {
         unsigned int bin = data[i] & 0xFFu;
-        atomicAdd(&shist[bin], 1);
-    }
-    __syncthreads();
-
-    for (int bin = t; bin < HIST_BINS; bin += blockDim.x) {
-        unsigned int val = shist[bin];
-        if (val)
-            atomicAdd(&hist[bin], val);
+        atomicAdd(&hist[bin], 1);
     }
 }
 
@@ -74,14 +59,14 @@ static float histogramGPU(const std::vector<uint32_t>& data, std::vector<uint32_
 
     int threads = 256;
     int blocks = std::min(65535, (n + threads - 1) / threads);
-    size_t shmem = HIST_BINS * sizeof(unsigned int);
+    // size_t shmem = HIST_BINS * sizeof(unsigned int);
 
     cudaEvent_t evStart, evStop;
     CHECK(cudaEventCreate(&evStart));
     CHECK(cudaEventCreate(&evStop));
 
     CHECK(cudaEventRecord(evStart));
-    histogram_shared_atomic<<<blocks, threads, shmem>>>(d_data, n, d_hist);
+    histogram_atomic<<<blocks, threads>>>(d_data, n, d_hist);
     CHECK(cudaEventRecord(evStop));
     CHECK(cudaEventSynchronize(evStop));
 
@@ -99,48 +84,63 @@ static float histogramGPU(const std::vector<uint32_t>& data, std::vector<uint32_
     return ms;
 }
 
-// ============================================================================
-// УЛУЧШЕННАЯ 8-БИТНАЯ РАЗРЯДНАЯ СОРТИРОВКА (4 прохода вместо 32)
-// 1. 8 бит за проход -> всего 4 прохода для 32-битных ключей (было 32 при 1 бите)
-// 2. Гистограммы в shared-памяти с атомиками для подсчёта
-// 3. Префиксная сумма на GPU (без обращений к CPU)
-// ============================================================================
-
 #define RADIX_BITS 8
 #define RADIX_BUCKETS (1 << RADIX_BITS)  // 256 корзин
 #define RADIX_MASK (RADIX_BUCKETS - 1)
 #define SORT_THREADS 256
+#define WARPS_PER_BLOCK (SORT_THREADS / 32)
 
 // Вычисление гистограмм по разрядам для каждого блока
+// Каждый варп считает свою локальную гистограмму, чтобы избежать конфликтов при записи
 __global__
 void radix_histogram(const uint32_t* in, int n, unsigned int* histograms, 
                      int shift, int elemsPerBlock)
 {
-    __shared__ unsigned int shist[RADIX_BUCKETS];
+    // Выделяем память под гистограмму для каждого варпа
+    __shared__ unsigned int shist[WARPS_PER_BLOCK][RADIX_BUCKETS];
     
     int t = threadIdx.x;
+    int laneId = t & 31;
+    int warpId = t >> 5;
     int blockId = blockIdx.x;
     
-    // Инициализация гистограммы в shared memory
-    for (int b = t; b < RADIX_BUCKETS; b += blockDim.x)
-        shist[b] = 0;
+    // Инициализация shared memory
+    unsigned int* shist_flat = &shist[0][0];
+    for (int i = t; i < WARPS_PER_BLOCK * RADIX_BUCKETS; i += blockDim.x)
+        shist_flat[i] = 0;
     __syncthreads();
     
     // Обработка тайла элементов данного блока
     int start = blockId * elemsPerBlock;
     int end = min(start + elemsPerBlock, n);
     
+    unsigned int* my_warp_hist = shist[warpId];
+
     for (int i = start + t; i < end; i += blockDim.x) {
         unsigned int digit = (in[i] >> shift) & RADIX_MASK;
-        atomicAdd(&shist[digit], 1);
+        
+        // нулевой поток варпа собирает значения остальных и обновляет счетчики
+        unsigned int mask = __activemask();
+        #pragma unroll
+        for (int k = 0; k < 32; k++) {
+            unsigned int d = __shfl_sync(mask, digit, k);
+            // Если k-й поток активен, нулевой поток учитывает его значение
+            if (laneId == 0 && (mask & (1u << k))) {
+                my_warp_hist[d]++;
+            }
+        }
     }
     __syncthreads();
     
-    // Запись гистограммы блока в global memory (column-major)
-    // histograms[digit * numBlocks + blockId] - удобнее при последующем сканировании
+    // Суммируем результаты всех варпов и пишем итог в глобальную память
     int numBlocks = gridDim.x;
-    for (int b = t; b < RADIX_BUCKETS; b += blockDim.x)
-        histograms[b * numBlocks + blockId] = shist[b];
+    for (int b = t; b < RADIX_BUCKETS; b += blockDim.x) {
+        unsigned int sum = 0;
+        for (int w = 0; w < WARPS_PER_BLOCK; w++) {
+            sum += shist[w][b];
+        }
+        histograms[b * numBlocks + blockId] = sum;
+    }
 }
 
 // Префиксная сумма по всем гистограммам блоков (на GPU, без возврата на CPU)
@@ -251,8 +251,8 @@ void radix_scatter(const uint32_t* in, uint32_t* out, int n,
         if (valid) {
             key = in[i];
             digit = (key >> shift) & RADIX_MASK;
-            sdigits[t] = (uint8_t)digit;
         }
+        sdigits[t] = (uint8_t)digit;
         __syncthreads();
         
         // Подсчёт ранга элемента: сколько предыдущих с тем же разрядом
@@ -344,9 +344,12 @@ void radixSort32(std::vector<uint32_t>& arr)
 }
 
 
-int main()
+int main(int argc, char** argv)
 {
-    int N = 1'000'000;
+    int N = 1000000;
+    if (argc > 1) {
+        N = std::atoi(argv[1]);
+    }
 
     std::vector<uint32_t> data(N);
     for (int i = 0; i < N; i++) data[i] = rand();
@@ -418,11 +421,13 @@ int main()
 
     double speedupRadix = cpu_ms / gpu_ms_radix;
     double speedupThrust = cpu_ms / gpu_ms_thrust;
+    double diffThrustRadix = gpu_ms_radix / gpu_ms_thrust;
 
     std::cout << "\nArray size: " << N << "\n\n";
-    std::cout << "CPU sort time: " << std::fixed << std::setprecision(2) << cpu_ms / 1000.0 << " s\n";
-    std::cout << "GPU Radix Sort time: " << std::fixed << std::setprecision(3) << gpu_ms_radix / 1000.0 << " s\n";
-    std::cout << "GPU thrust::sort time: " << std::fixed << std::setprecision(3) << gpu_ms_thrust / 1000.0 << " s\n";
-    std::cout << "Speedup (Radix vs CPU): " << std::fixed << std::setprecision(1) << speedupRadix << "x\n";
-    std::cout << "Speedup (thrust::sort vs CPU): " << std::fixed << std::setprecision(1) << speedupThrust << "x\n";
+    std::cout << "CPU sort time: " << std::fixed << std::setprecision(4) << cpu_ms / 1000.0 << " s\n";
+    std::cout << "GPU Radix Sort time: " << std::fixed << std::setprecision(4) << gpu_ms_radix / 1000.0 << " s\n";
+    std::cout << "GPU thrust::sort time: " << std::fixed << std::setprecision(4) << gpu_ms_thrust / 1000.0 << " s\n";
+    std::cout << "Speedup (Radix vs CPU): " << std::fixed << std::setprecision(2) << speedupRadix << "x\n";
+    std::cout << "Speedup (thrust::sort vs CPU): " << std::fixed << std::setprecision(2) << speedupThrust << "x\n";
+    std::cout << "Speedup (thrust::sort vs Radix): " << std::fixed << std::setprecision(2) << diffThrustRadix << "x\n";
 }

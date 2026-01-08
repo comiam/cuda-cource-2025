@@ -4,8 +4,7 @@
 # bin/   <- скомпилированный бинарник
 
 NVCC       := nvcc
-CUDA_ARCH  := sm_60
-CUDACFLAGS := -O3 -arch=$(CUDA_ARCH) -std=c++17
+CUDACFLAGS := -O3 -std=c++17 
 
 SRC_DIR := src
 BIN_DIR := bin
