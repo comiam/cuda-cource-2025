@@ -43,10 +43,20 @@ private:
     void* d_labels;
     void* d_frame;
     
+    unsigned char* h_frame_pinned;
+    float* h_boxes_pinned;
+    float* h_scores_pinned;
+    int* h_labels_pinned;
+    
+    cudaStream_t stream_preprocess;
+    cudaStream_t stream_inference;
+    cudaStream_t stream_postprocess;
+    
     size_t input_size;
     size_t boxes_size;
     size_t scores_size;
     size_t labels_size;
+    size_t max_frame_size;
     
     int input_h;
     int input_w;
@@ -56,7 +66,7 @@ private:
     void loadEngine(const std::string& engine_path);
     void loadLabels(const std::string& labels_path);
     void allocateBuffers();
-    void preprocess(const cv::Mat& frame);
+    void preprocess(const cv::Mat& frame, cudaStream_t stream);
     void postprocess(float* boxes, float* scores, int* labels, int num_detections, std::vector<Detection>& detections);
 };
 

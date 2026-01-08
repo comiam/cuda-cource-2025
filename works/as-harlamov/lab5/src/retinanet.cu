@@ -3,6 +3,7 @@
 #include <iostream>
 #include <algorithm>
 #include <stdexcept>
+#include <cstring>
 
 namespace {
     constexpr int BLOCK_SIZE_X = 16;
@@ -81,6 +82,8 @@ __global__ void preprocess_kernel(
 RetinaNet::RetinaNet(const std::string& engine_path, const std::string& labels_path, float conf_threshold)
     : runtime(nullptr), engine(nullptr), context(nullptr),
       d_input(nullptr), d_boxes(nullptr), d_scores(nullptr), d_labels(nullptr), d_frame(nullptr),
+      h_frame_pinned(nullptr), h_boxes_pinned(nullptr), h_scores_pinned(nullptr), h_labels_pinned(nullptr),
+      stream_preprocess(nullptr), stream_inference(nullptr), stream_postprocess(nullptr),
       input_h(640), input_w(640), conf_threshold(conf_threshold) {
     loadEngine(engine_path);
     loadLabels(labels_path);
@@ -88,11 +91,25 @@ RetinaNet::RetinaNet(const std::string& engine_path, const std::string& labels_p
 }
 
 RetinaNet::~RetinaNet() {
+    if (stream_preprocess) CUDA_CHECK(cudaStreamSynchronize(stream_preprocess));
+    if (stream_inference) CUDA_CHECK(cudaStreamSynchronize(stream_inference));
+    if (stream_postprocess) CUDA_CHECK(cudaStreamSynchronize(stream_postprocess));
+    
     if (d_input) CUDA_CHECK(cudaFree(d_input));
     if (d_boxes) CUDA_CHECK(cudaFree(d_boxes));
     if (d_scores) CUDA_CHECK(cudaFree(d_scores));
     if (d_labels) CUDA_CHECK(cudaFree(d_labels));
     if (d_frame) CUDA_CHECK(cudaFree(d_frame));
+    
+    if (h_frame_pinned) CUDA_CHECK(cudaFreeHost(h_frame_pinned));
+    if (h_boxes_pinned) CUDA_CHECK(cudaFreeHost(h_boxes_pinned));
+    if (h_scores_pinned) CUDA_CHECK(cudaFreeHost(h_scores_pinned));
+    if (h_labels_pinned) CUDA_CHECK(cudaFreeHost(h_labels_pinned));
+    
+    if (stream_preprocess) CUDA_CHECK(cudaStreamDestroy(stream_preprocess));
+    if (stream_inference) CUDA_CHECK(cudaStreamDestroy(stream_inference));
+    if (stream_postprocess) CUDA_CHECK(cudaStreamDestroy(stream_postprocess));
+    
     if (context) context->destroy();
     if (engine) engine->destroy();
     if (runtime) runtime->destroy();
@@ -151,23 +168,35 @@ void RetinaNet::allocateBuffers() {
     boxes_size = MAX_DETECTIONS * 4 * sizeof(float);
     scores_size = MAX_DETECTIONS * sizeof(float);
     labels_size = MAX_DETECTIONS * sizeof(int);
+    max_frame_size = MAX_FRAME_WIDTH * MAX_FRAME_HEIGHT * NUM_CHANNELS * sizeof(unsigned char);
     
     CUDA_CHECK(cudaMalloc(&d_input, input_size));
     CUDA_CHECK(cudaMalloc(&d_boxes, boxes_size));
     CUDA_CHECK(cudaMalloc(&d_scores, scores_size));
     CUDA_CHECK(cudaMalloc(&d_labels, labels_size));
-    
-    const size_t max_frame_size = MAX_FRAME_WIDTH * MAX_FRAME_HEIGHT * NUM_CHANNELS * sizeof(unsigned char);
     CUDA_CHECK(cudaMalloc(&d_frame, max_frame_size));
+    
+    CUDA_CHECK(cudaMallocHost(&h_frame_pinned, max_frame_size));
+    CUDA_CHECK(cudaMallocHost(&h_boxes_pinned, boxes_size));
+    CUDA_CHECK(cudaMallocHost(&h_scores_pinned, scores_size));
+    CUDA_CHECK(cudaMallocHost(&h_labels_pinned, labels_size));
+    
+    CUDA_CHECK(cudaStreamCreate(&stream_preprocess));
+    CUDA_CHECK(cudaStreamCreate(&stream_inference));
+    CUDA_CHECK(cudaStreamCreate(&stream_postprocess));
 }
 
-void RetinaNet::preprocess(const cv::Mat& frame) {
+void RetinaNet::preprocess(const cv::Mat& frame, cudaStream_t stream) {
     const int src_width = frame.cols;
     const int src_height = frame.rows;
     const int src_pitch = frame.step;
     
     const size_t frame_size = src_height * src_pitch;
-    CUDA_CHECK(cudaMemcpy(d_frame, frame.data, frame_size, cudaMemcpyHostToDevice));
+    
+    std::memcpy(h_frame_pinned, frame.data, frame_size);
+    
+    CUDA_CHECK(cudaMemcpyAsync(d_frame, h_frame_pinned, frame_size, 
+                                cudaMemcpyHostToDevice, stream));
     
     const dim3 block(BLOCK_SIZE_X, BLOCK_SIZE_Y);
     const dim3 grid((input_w + block.x - 1) / block.x, 
@@ -175,7 +204,7 @@ void RetinaNet::preprocess(const cv::Mat& frame) {
     
     // Output format: CHW (Channel-Height-Width)
     for (int c = 0; c < NUM_CHANNELS; ++c) {
-        preprocess_kernel<<<grid, block>>>(
+        preprocess_kernel<<<grid, block, 0, stream>>>(
             static_cast<const unsigned char*>(d_frame),
             static_cast<float*>(d_input),
             src_width,
@@ -186,8 +215,6 @@ void RetinaNet::preprocess(const cv::Mat& frame) {
             c
         );
     }
-    
-    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void RetinaNet::postprocess(float* boxes, float* scores, int* labels, int num_detections, std::vector<Detection>& detections) {
@@ -210,31 +237,45 @@ void RetinaNet::postprocess(float* boxes, float* scores, int* labels, int num_de
 }
 
 std::vector<Detection> RetinaNet::infer(const cv::Mat& frame) {
-    preprocess(frame);
+    preprocess(frame, stream_preprocess);
+    
+    cudaEvent_t preprocess_done;
+    CUDA_CHECK(cudaEventCreate(&preprocess_done));
+    CUDA_CHECK(cudaEventRecord(preprocess_done, stream_preprocess));
+    CUDA_CHECK(cudaStreamWaitEvent(stream_inference, preprocess_done, 0));
     
     void* bindings[] = {d_input, d_boxes, d_scores, d_labels};
-    if (!context->enqueueV2(bindings, nullptr, nullptr)) {
+    if (!context->enqueueV2(bindings, stream_inference, nullptr)) {
+        CUDA_CHECK(cudaEventDestroy(preprocess_done));
         throw std::runtime_error("Failed to execute TensorRT inference");
     }
-    CUDA_CHECK(cudaDeviceSynchronize());
     
-    std::vector<float> h_boxes(MAX_DETECTIONS * 4);
-    std::vector<float> h_scores(MAX_DETECTIONS);
-    std::vector<int> h_labels(MAX_DETECTIONS);
+    cudaEvent_t inference_done;
+    CUDA_CHECK(cudaEventCreate(&inference_done));
+    CUDA_CHECK(cudaEventRecord(inference_done, stream_inference));
+    CUDA_CHECK(cudaStreamWaitEvent(stream_postprocess, inference_done, 0));
     
-    CUDA_CHECK(cudaMemcpy(h_boxes.data(), d_boxes, boxes_size, cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_scores.data(), d_scores, scores_size, cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_labels.data(), d_labels, labels_size, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpyAsync(h_boxes_pinned, d_boxes, boxes_size, 
+                                cudaMemcpyDeviceToHost, stream_postprocess));
+    CUDA_CHECK(cudaMemcpyAsync(h_scores_pinned, d_scores, scores_size, 
+                                cudaMemcpyDeviceToHost, stream_postprocess));
+    CUDA_CHECK(cudaMemcpyAsync(h_labels_pinned, d_labels, labels_size, 
+                                cudaMemcpyDeviceToHost, stream_postprocess));
+    
+    CUDA_CHECK(cudaStreamSynchronize(stream_postprocess));
+    
+    CUDA_CHECK(cudaEventDestroy(preprocess_done));
+    CUDA_CHECK(cudaEventDestroy(inference_done));
     
     int num_detections = 0;
     for (int i = 0; i < MAX_DETECTIONS; ++i) {
-        if (h_scores[i] > 0.0f) {
+        if (h_scores_pinned[i] > 0.0f) {
             num_detections++;
         }
     }
     
     std::vector<Detection> detections;
-    postprocess(h_boxes.data(), h_scores.data(), h_labels.data(), num_detections, detections);
+    postprocess(h_boxes_pinned, h_scores_pinned, h_labels_pinned, num_detections, detections);
     
     return detections;
 }
