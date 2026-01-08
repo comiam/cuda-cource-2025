@@ -5,15 +5,15 @@
 #include <cuda_runtime.h>
 
 #define THREADS_PER_BLOCK 256
-#define ELEMENTS_PER_BLOCK 2*THREADS_PER_BLOCK
-#define NUM_BANKS 16
-#define LOG_NUM_BANKS 4
+#define ELEMENTS_PER_BLOCK (2*THREADS_PER_BLOCK)
+#define NUM_BANKS 32
+#define LOG_NUM_BANKS 5
 #define CONFLICT_FREE_OFFSET(n) (((n) >> LOG_NUM_BANKS))
 
 
 // Multi-block scan: Phase 1 - Local exclusive scan in each block
 __global__
-void scanSingleBlock(uint32_t* input, uint32_t* output, uint32_t* blockSums) {
+void scanSingleBlock(uint32_t* input, uint32_t* output, uint32_t* blockSums, int totalN) {
     extern __shared__ uint32_t temp[];
     
     int n = ELEMENTS_PER_BLOCK;
@@ -29,8 +29,8 @@ void scanSingleBlock(uint32_t* input, uint32_t* output, uint32_t* blockSums) {
     int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
     int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
     
-    temp[ai + bankOffsetA] = input[blockOffset + ai];
-    temp[bi + bankOffsetB] = input[blockOffset + bi];
+    temp[ai + bankOffsetA] = (blockOffset + ai < totalN) ? input[blockOffset + ai] : 0;
+    temp[bi + bankOffsetB] = (blockOffset + bi < totalN) ? input[blockOffset + bi] : 0;
     
 
     int offset = 1;
@@ -70,9 +70,12 @@ void scanSingleBlock(uint32_t* input, uint32_t* output, uint32_t* blockSums) {
 	}
 	__syncthreads();
     
-    // Write results
-    output[blockOffset + ai] = temp[ai + bankOffsetA];
-	output[blockOffset + bi] = temp[bi + bankOffsetB];
+    if (blockOffset + ai < totalN) {
+        output[blockOffset + ai] = temp[ai + bankOffsetA];
+    }
+    if (blockOffset + bi < totalN) {
+        output[blockOffset + bi] = temp[bi + bankOffsetB];
+    }
 }
 
 
@@ -82,7 +85,10 @@ void addMultiBlockSums(uint32_t* output, uint32_t* blockPrefixSums, int n, int e
     int blockId = blockIdx.x;
 	int threadId = threadIdx.x;
     int blockOffset = blockId * ELEMENTS_PER_BLOCK;
-    output[blockOffset + threadId] += blockPrefixSums[blockId];
+    int idx = blockOffset + threadId;
+    if (idx < n) {
+        output[idx] += blockPrefixSums[blockId];
+    }
 }
 
 
@@ -127,7 +133,7 @@ void scanKernel(uint32_t* input, uint32_t* output, int n) {
     // Step 1: Local scan in each block
     int blockSharedMem = (ELEMENTS_PER_BLOCK + CONFLICT_FREE_OFFSET(ELEMENTS_PER_BLOCK)) * sizeof(uint32_t);
     scanSingleBlock<<<numBlocks, (ELEMENTS_PER_BLOCK + 1) / 2, blockSharedMem>>>(
-        input, output, d_blockSums
+        input, output, d_blockSums, n
     );
     cudaDeviceSynchronize();
     
@@ -169,20 +175,9 @@ void radixSortTemplate(T* d_input, T* d_output, int n) {
         // Extract bits
         extractBitsKernel<<<blocksPerGrid, THREADS_PER_BLOCK>>>(d_temp1, d_bits, n, bit);
         cudaDeviceSynchronize();
-        
-        // uint32_t* h = (uint32_t*)malloc(n * sizeof(uint32_t));
-        // cudaMemcpy(h, d_bits, n * sizeof(uint32_t), cudaMemcpyDeviceToHost);
-
-        // uint32_t* h2 = (uint32_t*)malloc(n * sizeof(uint32_t));
-        // cudaMemcpy(h2, d_input, n * sizeof(uint32_t), cudaMemcpyDeviceToHost);
-        // for (int i = 0; i < n; i++){
-        //     printf("%d->%d ", (uint32_t)h2[i], (uint32_t)h[i]);
-        // }
-        // printf("\n");
 
         scanKernel(d_bits, d_scanResult, n);
         cudaDeviceSynchronize();
-        
 
         // Count total zeros (only from first n elements)
         // scanResult[i] = exclusive prefix sum = sum of bits[0..i-1]
@@ -212,6 +207,10 @@ void radixSortTemplate(T* d_input, T* d_output, int n) {
     cudaFree(d_scanResult);
 }
 
-void radixSort(uint32_t* d_input, uint32_t* d_output, int n){
+void radixSort_int32(uint32_t* d_input, uint32_t* d_output, int n){
     radixSortTemplate<uint32_t>(d_input, d_output, n);
 }
+
+// void radixSort_int64(uint64_t* d_input, uint64_t* d_output, int n){
+//     radixSortTemplate<uint64_t>(d_input, d_output, n);
+// }

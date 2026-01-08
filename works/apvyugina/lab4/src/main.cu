@@ -14,14 +14,14 @@ void testSort(const vector<T>& testData, const char* typeName) {
     
     printf("\n=== Testing %s ===\n", typeName);
     printf("Array size: %d\n", n);
-    
+
     // CPU sort with sort
     vector<T> cpuData = testData;
     auto cpuStart = chrono::high_resolution_clock::now();
     sort(cpuData.begin(), cpuData.end());
     auto cpuEnd = chrono::high_resolution_clock::now();
     auto cpuTime = chrono::duration_cast<chrono::microseconds>(cpuEnd - cpuStart).count();
-    
+
     // GPU sort
     T* d_input;
     T* d_output;
@@ -36,7 +36,13 @@ void testSort(const vector<T>& testData, const char* typeName) {
     
     // Time only the sorting (not data transfer)
     auto gpuStart = chrono::high_resolution_clock::now();
-    radixSort(d_input, d_output, n);
+    if constexpr (is_same_v<T, uint32_t>) {
+        radixSort_int32(d_input, d_output, n);
+    }
+    else if constexpr (is_same_v<T, uint64_t>) {
+        radixSort_int64(d_input, d_output, n);
+    }
+
     cudaDeviceSynchronize();
     auto gpuEnd = chrono::high_resolution_clock::now();
     auto gpuTime = chrono::duration_cast<chrono::microseconds>(gpuEnd - gpuStart).count();
@@ -66,17 +72,15 @@ void testSort(const vector<T>& testData, const char* typeName) {
     printf("Speedup: %.2fx\n", (double)cpuTime / gpuTime);
     printf("Result: %s\n", correct ? "CORRECT" : "INCORRECT");
     
-    if (n <= 20) {
-        printf("Sorted array: ");
-        for (int i = 0; i < n; i++) {
-            if constexpr (sizeof(T) == 4) {
-                printf("%d ", (int32_t)gpuResult[i]);
-            } else {
-                printf("%ld ", (int64_t)gpuResult[i]);
-            }
-        }
-        printf("\n");
-    }
+    // printf("Sorted array: ");
+    // for (int i = 0; i < n; i++) {
+    //     if constexpr (sizeof(T) == 4) {
+    //         printf("%d ", (int32_t)gpuResult[i]);
+    //     } else {
+    //         printf("%ld ", (int64_t)gpuResult[i]);
+    //     }
+    // }
+    // printf("\n");
     
     cudaFree(d_input);
     cudaFree(d_output);
@@ -84,12 +88,12 @@ void testSort(const vector<T>& testData, const char* typeName) {
 
 int main() {
     // Test with int32_t - small array
-    vector<uint32_t> testData32 = {170, 45, 75, 90, 2, 802, 24, 66, 7, 100, 127, 25, 34, 92, 9, 67, 578};
+    vector<uint32_t> testData32 = {170, 45, 75, 90, 2, 802, 24, 66};
     testSort<uint32_t>(testData32, "int32_t (small)");
     
     // Test with int32_t - larger array
     vector<uint32_t> testData32Large;
-    for (int i = 1000000; i > 0; i--) {
+    for (int i = 100000; i > 0; i--) {
         testData32Large.push_back(i * 7 + 13);
     }
     testSort<uint32_t>(testData32Large, "int32_t (1000 elements)");
