@@ -92,8 +92,9 @@ void addMultiBlockSums(uint32_t* output, uint32_t* blockPrefixSums, int n, int e
 }
 
 
+template<typename T>
 __global__
-void extractBitsKernel(uint32_t* input, uint32_t* bits, int n, unsigned int bitPos) {
+void extractBitsKernel(T* input, uint32_t* bits, int n, unsigned int bitPos) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
         bits[idx] = (input[idx] >> bitPos) & 1u;
@@ -173,11 +174,11 @@ void radixSortTemplate(T* d_input, T* d_output, int n) {
     // Process each bit from LSB to MSB
     for (int bit = 0; bit < numBits; bit++) {
         // Extract bits
-        extractBitsKernel<<<blocksPerGrid, THREADS_PER_BLOCK>>>(d_temp1, d_bits, n, bit);
+        extractBitsKernel<T><<<blocksPerGrid, THREADS_PER_BLOCK>>>(d_temp1, d_bits, n, bit);
         cudaDeviceSynchronize();
 
         scanKernel(d_bits, d_scanResult, n);
-        cudaDeviceSynchronize();
+        cudaDeviceSynchronize(); 
 
         // Count total zeros (only from first n elements)
         // scanResult[i] = exclusive prefix sum = sum of bits[0..i-1]
@@ -211,6 +212,6 @@ void radixSort_int32(uint32_t* d_input, uint32_t* d_output, int n){
     radixSortTemplate<uint32_t>(d_input, d_output, n);
 }
 
-// void radixSort_int64(uint64_t* d_input, uint64_t* d_output, int n){
-//     radixSortTemplate<uint64_t>(d_input, d_output, n);
-// }
+void radixSort_int64(uint64_t* d_input, uint64_t* d_output, int n){
+    radixSortTemplate<uint64_t>(d_input, d_output, n);
+}
