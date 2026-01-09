@@ -8,11 +8,11 @@
 
 namespace fs = std::filesystem;
 
-const int BATCH_SIZE = 16;
+const int BATCH_SIZE = 1;
 
 int main(int argc, char** argv) {
     if (argc < 5) {
-        std::cerr << "<onnx_path> video <input_mp4> <use_int8_bool>" << std::endl;
+        std::cerr << "Usage: ./RetinaTRT <onnx_path> video <input_mp4> <use_int8_bool>" << std::endl;
         return 1;
     }
 
@@ -32,20 +32,26 @@ int main(int argc, char** argv) {
 
     std::cout << "Video input: " << frame_width << "x" << frame_height << " @ " << fps << " FPS" << std::endl;
 
+    const int MODEL_WIDTH = 640;
+    const int MODEL_HEIGHT = 640;
+
     ModelOptions opts;
     opts.onnx_path = onnx_path;
     opts.use_int8 = use_int8;
     opts.max_batch_size = BATCH_SIZE;
-    opts.input_width = frame_width;
-    opts.input_height = frame_height;
-    opts.engine_path = "model_" + std::to_string(frame_width) + "x" + std::to_string(frame_height) + ".engine";
+    opts.input_width = MODEL_WIDTH;
+    opts.input_height = MODEL_HEIGHT;
+    opts.engine_path = "model_" + std::to_string(MODEL_WIDTH) + "x" + std::to_string(MODEL_HEIGHT) + ".engine";
+    opts.calibration_data_path = input_video_path; // Use input video for calibration if needed
 
     InferenceEngine engine(opts);
 
+    // Look for labels.txt in the same dir as ONNX or current dir
     fs::path onnx_p(onnx_path);
     fs::path labels_p = onnx_p.parent_path() / "labels.txt";
     std::vector<std::string> classNames = utils::loadLabels(labels_p.string());
     if (classNames.empty()) classNames = utils::loadLabels("labels.txt");
+    // if (classNames.empty()) classNames = utils::loadLabels("../onnx_scripts/labels.txt"); // Fallback for build dir run
 
     if (!engine.load()) {
         std::cout << "Building engine for " << frame_width << "x" << frame_height << "..." << std::endl;
@@ -53,18 +59,24 @@ int main(int argc, char** argv) {
         if (!engine.load()) return -1;
     }
 
-    void* buffers[4]; 
-    const int MAX_DET = 300; 
+    // For Raw RetinaNet V2: 1 input + 2 outputs
+    const int NUM_BINDINGS = 3;
+    void* buffers[NUM_BINDINGS];
     
-    size_t input_size = BATCH_SIZE * 3 * frame_height * frame_width * sizeof(float);
-    size_t boxes_size = BATCH_SIZE * MAX_DET * 4 * sizeof(float);
-    size_t scores_size = BATCH_SIZE * MAX_DET * sizeof(float);
-    size_t labels_size = BATCH_SIZE * MAX_DET * sizeof(int64_t);
-
+    size_t input_size = BATCH_SIZE * 3 * MODEL_HEIGHT * MODEL_WIDTH * sizeof(float);
     checkCudaErrors(cudaMalloc(&buffers[0], input_size));
-    checkCudaErrors(cudaMalloc(&buffers[1], boxes_size));
-    checkCudaErrors(cudaMalloc(&buffers[2], scores_size));
-    checkCudaErrors(cudaMalloc(&buffers[3], labels_size));
+
+    size_t cls_size = BATCH_SIZE * 200000 * 91 * sizeof(float);
+    size_t bbox_size = BATCH_SIZE * 200000 * 4 * sizeof(float);
+
+    checkCudaErrors(cudaMalloc(&buffers[1], cls_size));
+    checkCudaErrors(cudaMalloc(&buffers[2], bbox_size));
+
+    // Allocate pinned host memory for output
+    float* cpu_cls_buffer = nullptr;
+    float* cpu_bbox_buffer = nullptr;
+    checkCudaErrors(cudaMallocHost((void**)&cpu_cls_buffer, cls_size));
+    checkCudaErrors(cudaMallocHost((void**)&cpu_bbox_buffer, bbox_size));
 
     cudaStream_t stream;
     checkCudaErrors(cudaStreamCreate(&stream));
@@ -76,10 +88,6 @@ int main(int argc, char** argv) {
     std::vector<cv::Mat> batch_frames;
     batch_frames.reserve(BATCH_SIZE);
     
-    std::vector<float> cpu_boxes(BATCH_SIZE * MAX_DET * 4);
-    std::vector<float> cpu_scores(BATCH_SIZE * MAX_DET);
-    std::vector<int64_t> cpu_labels(BATCH_SIZE * MAX_DET);
-
     std::cout << "Start processing..." << std::endl;
     auto start_time = std::chrono::high_resolution_clock::now();
     int total_frames = 0;
@@ -91,37 +99,40 @@ int main(int argc, char** argv) {
         batch_frames.push_back(frame);
 
         if (batch_frames.size() == BATCH_SIZE) {
-            utils::preprocessBatch(batch_frames, (float*)buffers[0], frame_width, frame_height, stream);
+            utils::preprocessBatch(batch_frames, (float*)buffers[0], MODEL_WIDTH, MODEL_HEIGHT, stream);
             engine.run(buffers, stream);
-
-            checkCudaErrors(cudaMemcpyAsync(cpu_boxes.data(), buffers[1], boxes_size, cudaMemcpyDeviceToHost, stream));
-            checkCudaErrors(cudaMemcpyAsync(cpu_scores.data(), buffers[2], scores_size, cudaMemcpyDeviceToHost, stream));
-            checkCudaErrors(cudaMemcpyAsync(cpu_labels.data(), buffers[3], labels_size, cudaMemcpyDeviceToHost, stream));
             
-            cudaStreamSynchronize(stream);
-
-            std::vector<std::vector<Detection>> batch_dets(BATCH_SIZE);
+            int num_anchors = 120087;
+            int num_classes = 91;
             
-            for(int b=0; b < BATCH_SIZE; ++b) {
-                for(int i=0; i < MAX_DET; ++i) {
-                    float score = cpu_scores[b * MAX_DET + i];
-                    if (score < 0.4f) continue;
+            auto detections = utils::postProcess(
+                (float*)buffers[1], 
+                (float*)buffers[2], 
+                cpu_cls_buffer,
+                cpu_bbox_buffer,
+                batch_frames.size(), 
+                num_anchors, 
+                num_classes,
+                MODEL_WIDTH, 
+                MODEL_HEIGHT,
+                stream,
+                0.5f,
+                0.5f 
+            );
+            
+            float scale_x = (float)frame_width / MODEL_WIDTH;
+            float scale_y = (float)frame_height / MODEL_HEIGHT;
 
-                    Detection det;
-                    det.score = score;
-                    det.label = (int)cpu_labels[b * MAX_DET + i];
-                    
-                    int box_idx = (b * MAX_DET + i) * 4;
-                    det.x1 = cpu_boxes[box_idx + 0];
-                    det.y1 = cpu_boxes[box_idx + 1];
-                    det.x2 = cpu_boxes[box_idx + 2];
-                    det.y2 = cpu_boxes[box_idx + 3];
-                    
-                    batch_dets[b].push_back(det);
+            for (auto& batch : detections) {
+                for (auto& det : batch) {
+                    det.x1 *= scale_x;
+                    det.x2 *= scale_x;
+                    det.y1 *= scale_y;
+                    det.y2 *= scale_y;
                 }
             }
-
-            utils::drawDetections(batch_frames, batch_dets, classNames);
+            
+            utils::drawDetections(batch_frames, detections, classNames);
 
             for (const auto& f : batch_frames) {
                 writer.write(f);
@@ -129,7 +140,7 @@ int main(int argc, char** argv) {
             
             total_frames += BATCH_SIZE;
             if (total_frames % 20 == 0) {
-                 std::cout << "\rFrames: " << total_frames << std::flush;
+                 std::cout << "\rFrames processed: " << total_frames << std::flush;
             }
 
             batch_frames.clear();
@@ -137,10 +148,9 @@ int main(int argc, char** argv) {
     }
 
     cudaStreamDestroy(stream);
-    cudaFree(buffers[0]);
-    cudaFree(buffers[1]);
-    cudaFree(buffers[2]);
-    cudaFree(buffers[3]);
+    for(int i=0; i<NUM_BINDINGS; ++i) cudaFree(buffers[i]);
+    cudaFreeHost(cpu_cls_buffer);
+    cudaFreeHost(cpu_bbox_buffer);
 
     auto end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end_time - start_time;

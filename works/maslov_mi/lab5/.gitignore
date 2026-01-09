@@ -1,2 +1,30 @@
+# Build directories and artifacts
 build/
-video/
+bin/
+lib/
+*.o
+*.so
+
+# TensorRT / ONNX models
+*.engine
+*.onnx
+calib.table
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# IDEs
+.vscode/
+.idea/
+.cursor/
+
+# Output files
+output_annotated.mp4
+output_annotated_int8.mp4
+labels.txt
+
+# System
+.DS_Store

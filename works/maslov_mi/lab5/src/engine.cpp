@@ -1,4 +1,5 @@
 #include "engine.h"
+#include "calibrator.h"
 #include <NvOnnxParser.h>
 #include <fstream>
 #include <iostream>
@@ -38,7 +39,19 @@ bool InferenceEngine::build() {
 
     if (m_options.use_int8 && builder->platformHasFastInt8()) {
         config->setFlag(BuilderFlag::kINT8);
-        std::cout << "Включен режим INT8." << std::endl;
+
+        
+        m_calibrator = std::make_unique<Int8EntropyCalibrator2>(
+            m_options.max_batch_size, 
+            m_options.input_width, 
+            m_options.input_height, 
+            m_options.calibration_data_path,
+            "calib.table",
+            "input"
+        );
+        config->setInt8Calibrator(m_calibrator.get());
+        
+        std::cout << "Включен режим INT8 c калибратором." << std::endl;
     } else if (builder->platformHasFastFp16()) {
         config->setFlag(BuilderFlag::kFP16);
         std::cout << "Включен режим FP16." << std::endl;
@@ -72,5 +85,11 @@ bool InferenceEngine::load() {
 
 bool InferenceEngine::run(void** buffers, cudaStream_t stream) {
     m_context->setInputShape("input", Dims4(m_options.max_batch_size, 3, m_options.input_height, m_options.input_width));
-    return m_context->enqueueV2(buffers, stream, nullptr);
+    
+    for (int i = 0; i < m_engine->getNbIOTensors(); ++i) {
+        const char* name = m_engine->getIOTensorName(i);
+        m_context->setTensorAddress(name, buffers[i]);
+    }
+    
+    return m_context->enqueueV3(stream);
 }

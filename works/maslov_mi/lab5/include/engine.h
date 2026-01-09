@@ -12,7 +12,10 @@ struct ModelOptions {
     int input_height = 640;
     std::string onnx_path;
     std::string engine_path = "model.engine";
+    std::string calibration_data_path; // Video file for calibration
 };
+
+class Int8EntropyCalibrator2; // Forward decl
 
 class InferenceEngine {
 public:
@@ -31,4 +34,7 @@ private:
     std::unique_ptr<nvinfer1::IRuntime> m_runtime;
     std::unique_ptr<nvinfer1::ICudaEngine> m_engine;
     std::unique_ptr<nvinfer1::IExecutionContext> m_context;
+    
+    // Hold calibrator instance to ensure it lives during build
+    std::unique_ptr<Int8EntropyCalibrator2> m_calibrator;
 };
