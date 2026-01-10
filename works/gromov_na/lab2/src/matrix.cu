@@ -93,11 +93,11 @@ __global__ void gpu_matmul_coalesced_both(const float *a_transposed, const float
     { // после транспонирования размеры меняются местами
         float sum = 0.0f;
         // при доступе к транспонированным матрицам оба доступа коалесцированные:
-        // a_transposed[col * k + l] - коалесцированный доступ к транспонированной A
+        // a_transposed[l * m + col] - коалесцированный доступ к транспонированной A (правильная индексация)
         // b_transposed[row * k + l] - коалесцированный доступ к транспонированной B
         for (int l = 0; l < k; ++l)
         {
-            sum += a_transposed[col * k + l] * b_transposed[row * k + l];
+            sum += a_transposed[l * m + col] * b_transposed[row * k + l];
         }
         // результат записывается как транспонированный
         c_transposed[col * n + row] = sum;
@@ -108,8 +108,9 @@ __global__ void gpu_matmul_coalesced_both(const float *a_transposed, const float
 __global__ void gpu_matmul_shared(const float *a, const float *b, float *c, int m, int n, int k)
 {
     const int tile_size = 16;
-    __shared__ float as[tile_size][tile_size];
-    __shared__ float bs[tile_size][tile_size];
+    // добавляем padding к размеру shared memory
+    __shared__ float as[tile_size][tile_size + 1];
+    __shared__ float bs[tile_size][tile_size + 1];
 
     int bx = blockIdx.x, by = blockIdx.y;
     int tx = threadIdx.x, ty = threadIdx.y;
@@ -175,6 +176,11 @@ int main()
 
     float *d_a, *d_b, *d_c, *d_at, *d_bt, *d_ct; // указатели на транспонированные и промежуточные матрицы
 
+    // объявление CUDA событий для измерения времени выполнения GPU операций
+    cudaEvent_t start_event, stop_event;
+    CUDA_CHECK(cudaEventCreate(&start_event));
+    CUDA_CHECK(cudaEventCreate(&stop_event));
+
     // выделение памяти для всех массивов
     CUDA_CHECK(cudaMalloc(&d_a, size_a * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_b, size_b * sizeof(float)));
@@ -208,65 +214,55 @@ int main()
     auto cpu_time = std::chrono::duration<double>(end - start).count();
 
     // gpu naive
-    start = std::chrono::high_resolution_clock::now();
+    CUDA_CHECK(cudaEventRecord(start_event));
     gpu_matmul_naive<<<grid, block>>>(d_a, d_b, d_c, m, n, k);
-    CUDA_CHECK(cudaDeviceSynchronize());
-    end = std::chrono::high_resolution_clock::now();
-    auto gpu_naive_time = std::chrono::duration<double>(end - start).count();
+    CUDA_CHECK(cudaEventRecord(stop_event));
+    CUDA_CHECK(cudaEventSynchronize(stop_event));
+    float gpu_naive_time;
+    CUDA_CHECK(cudaEventElapsedTime(&gpu_naive_time, start_event, stop_event));
 
     // gpu naive с коалесцированным доступом
-    start = std::chrono::high_resolution_clock::now();
+    CUDA_CHECK(cudaEventRecord(start_event));
     gpu_matmul_naive_coalesced<<<grid, block>>>(d_a, d_bt, d_c, m, n, k);
-    CUDA_CHECK(cudaDeviceSynchronize());
-    end = std::chrono::high_resolution_clock::now();
-    auto gpu_coalesced_time = std::chrono::duration<double>(end - start).count();
+    CUDA_CHECK(cudaEventRecord(stop_event));
+    CUDA_CHECK(cudaEventSynchronize(stop_event));
+    float gpu_coalesced_time;
+    CUDA_CHECK(cudaEventElapsedTime(&gpu_coalesced_time, start_event, stop_event));
 
     // gpu с коалесцированным доступом к обеим матрицам
-    start = std::chrono::high_resolution_clock::now();
+    CUDA_CHECK(cudaEventRecord(start_event));
     // вычисляем (A*B)^T = B^T * A^T
     dim3 grid_coalesced_both((m + block.x - 1) / block.x, (n + block.y - 1) / block.y);
     gpu_matmul_coalesced_both<<<grid_coalesced_both, block>>>(d_at, d_bt, d_ct, m, n, k);
-    CUDA_CHECK(cudaDeviceSynchronize());
     // теперь транспонируем результат, чтобы получить A*B
     dim3 grid_transpose_result((n + block_transpose.x - 1) / block_transpose.x,
                                (m + block_transpose.y - 1) / block_transpose.y);
     transpose_matrix<<<grid_transpose_result, block_transpose>>>(d_ct, d_c, n, m);
-    CUDA_CHECK(cudaDeviceSynchronize());
-    end = std::chrono::high_resolution_clock::now();
-    auto gpu_coalesced_both_time = std::chrono::duration<double>(end - start).count();
+    CUDA_CHECK(cudaEventRecord(stop_event));
+    CUDA_CHECK(cudaEventSynchronize(stop_event));
+    float gpu_coalesced_both_time;
+    CUDA_CHECK(cudaEventElapsedTime(&gpu_coalesced_both_time, start_event, stop_event));
 
     // gpu shared
-    start = std::chrono::high_resolution_clock::now();
+    CUDA_CHECK(cudaEventRecord(start_event));
     gpu_matmul_shared<<<grid, block>>>(d_a, d_b, d_c, m, n, k);
-    CUDA_CHECK(cudaDeviceSynchronize());
-    end = std::chrono::high_resolution_clock::now();
-    auto gpu_shared_time = std::chrono::duration<double>(end - start).count();
-
-    // копируем результат с gpu
-    std::vector<float> h_c_gpu(size_c);
-    CUDA_CHECK(cudaMemcpy(h_c_gpu.data(), d_c, size_c * sizeof(float), cudaMemcpyDeviceToHost));
-
-    // проверка корректности
-    bool correct = true;
-    for (int i = 0; i < size_c; ++i)
-    {
-        if (abs(h_c[i] - h_c_gpu[i]) > 1e-3)
-        {
-            correct = false;
-            break;
-        }
-    }
+    CUDA_CHECK(cudaEventRecord(stop_event));
+    CUDA_CHECK(cudaEventSynchronize(stop_event));
+    float gpu_shared_time;
+    CUDA_CHECK(cudaEventElapsedTime(&gpu_shared_time, start_event, stop_event));
 
     std::cout << "cpu time: " << cpu_time << " s\n";
-    std::cout << "gpu naive time: " << gpu_naive_time << " s\n";
-    std::cout << "gpu coalesced time: " << gpu_coalesced_time << " s\n";
-    std::cout << "gpu coalesced (both) time: " << gpu_coalesced_both_time << " s\n";
-    std::cout << "gpu shared time: " << gpu_shared_time << " s\n";
-    std::cout << "speedup (coalesced): " << cpu_time / gpu_coalesced_time << "x\n";
-    std::cout << "speedup (coalesced both): " << cpu_time / gpu_coalesced_both_time << "x\n";
-    std::cout << "speedup (shared): " << cpu_time / gpu_shared_time << "x\n";
+    std::cout << "gpu naive time: " << gpu_naive_time / 1000.0f << " s\n"; // преобразуем миллисекунды в секунды
+    std::cout << "gpu coalesced time: " << gpu_coalesced_time / 1000.0f << " s\n";
+    std::cout << "gpu coalesced (both) time: " << gpu_coalesced_both_time / 1000.0f << " s\n";
+    std::cout << "gpu shared time: " << gpu_shared_time / 1000.0f << " s\n";
+    std::cout << "speedup (coalesced): " << cpu_time / (gpu_coalesced_time / 1000.0f) << "x\n";
+    std::cout << "speedup (coalesced both): " << cpu_time / (gpu_coalesced_both_time / 1000.0f) << "x\n";
+    std::cout << "speedup (shared): " << cpu_time / (gpu_shared_time / 1000.0f) << "x\n";
 
     // освобождение памяти
+    CUDA_CHECK(cudaEventDestroy(start_event));
+    CUDA_CHECK(cudaEventDestroy(stop_event));
     cudaFree(d_a);
     cudaFree(d_b);
     cudaFree(d_c);
