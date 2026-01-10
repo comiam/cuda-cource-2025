@@ -18,14 +18,14 @@
 ```
 > enter matrix sizes m, n, k (e.g., 1024 1024 1024): 32 32 32
 matrix size: 32x32 * 32x32
-cpu time: 0.000104386 s
-gpu naive time: 1.8484e-05 s
-gpu coalesced time: 2.2087e-05 s
-gpu coalesced (both) time: 2.8418e-05 s
-gpu shared time: 1.9579e-05 s
-speedup (coalesced): 4.72613x
-speedup (coalesced both): 3.67324x
-speedup (shared): 5.33153x
+cpu time: 2.414e-05 s
+gpu naive time: 2.2528e-05 s
+gpu coalesced time: 2.5888e-05 s
+gpu coalesced (both) time: 2.2496e-05 s
+gpu shared time: 1.6576e-05 s
+speedup (coalesced): 0.932478x
+speedup (coalesced both): 1.07308x
+speedup (shared): 1.45632x
 ```
 
 ### Запуск 2 (средние матрицы: 512x512)
@@ -33,14 +33,14 @@ speedup (shared): 5.33153x
 ```
 > enter matrix sizes m, n, k (e.g., 1024 1024 1024): 512 512 512
 matrix size: 512x512 * 512x512
-cpu time: 0.473271 s
-gpu naive time: 0.000503631 s
-gpu coalesced time: 0.00242976 s
-gpu coalesced (both) time: 0.00243617 s
-gpu shared time: 0.000294271 s
-speedup (coalesced): 194.781x
-speedup (coalesced both): 194.268x
-speedup (shared): 1608.28x
+cpu time: 0.187761 s
+gpu naive time: 0.000992256 s
+gpu coalesced time: 0.00513635 s
+gpu coalesced (both) time: 0.000951808 s
+gpu shared time: 0.0007784 s
+speedup (coalesced): 36.5554x
+speedup (coalesced both): 197.268x
+speedup (shared): 241.215x
 ```
 
 ### Запуск 3 (крупные матрицы: 1024x1024)
@@ -48,14 +48,14 @@ speedup (shared): 1608.28x
 ```
 > enter matrix sizes m, n, k (e.g., 1024 1024 1024): 1024 1024 1024
 matrix size: 1024x1024 * 1024x1024
-cpu time: 6.0976 s
-gpu naive time: 0.00928773 s
-gpu coalesced time: 0.0520228 s
-gpu coalesced (both) time: 0.0518853 s
-gpu shared time: 0.00581681 s
-speedup (coalesced): 117.21x
-speedup (coalesced both): 117.521x
-speedup (shared): 1048.27x
+cpu time: 3.73134 s
+gpu naive time: 0.00374282 s
+gpu coalesced time: 0.0203148 s
+gpu coalesced (both) time: 0.00373462 s
+gpu shared time: 0.00302976 s
+speedup (coalesced): 183.677x
+speedup (coalesced both): 999.122x
+speedup (shared): 1231.56x
 ```
 
 ## Выводы
