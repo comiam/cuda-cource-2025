@@ -86,14 +86,73 @@ __global__ void sobel_filter(const unsigned char *input, unsigned char *output, 
     int tx = threadIdx.x + rx;
     int ty = threadIdx.y + rx;
 
-    // загрузка в shared memory
-    for (int dy = -rx; dy <= rx; ++dy)
+    // загрузка центральной части в shared memory - каждый поток загружает один элемент
+    if (row < height && col < width)
     {
-        for (int dx = -rx; dx <= rx; ++dx)
+        shared_tile[ty][tx] = static_cast<float>(input[row * width + col]);
+    }
+    else
+    {
+        // для потоков за пределами изображения загружаем 0
+        shared_tile[ty][tx] = 0.0f;
+    }
+
+    // загрузка граничных элементов (halo elements) - потоки на границе блока загружают дополнительные элементы
+    // левые и правые границы
+    if (threadIdx.x < rx)
+    {
+        int halo_col_left = blockIdx.x * blockDim.x - rx + threadIdx.x;
+        int halo_col_right = (blockIdx.x + 1) * blockDim.x + threadIdx.x;
+
+        if (halo_col_left >= 0 && halo_col_left < width)
         {
-            int src_row = min(max(row + dy, 0), height - 1);
-            int src_col = min(max(col + dx, 0), width - 1);
-            shared_tile[ty + dy][tx + dx] = static_cast<float>(input[src_row * width + src_col]);
+            int src_row = min(max(row, 0), height - 1);
+            int src_col = min(max(halo_col_left, 0), width - 1);
+            shared_tile[ty][threadIdx.x] = static_cast<float>(input[src_row * width + src_col]);
+        }
+        else
+        {
+            shared_tile[ty][threadIdx.x] = 0.0f;
+        }
+
+        if (halo_col_right < width)
+        {
+            int src_row = min(max(row, 0), height - 1);
+            int src_col = min(max(halo_col_right, 0), width - 1);
+            shared_tile[ty][tile_size + threadIdx.x + rx] = static_cast<float>(input[src_row * width + src_col]);
+        }
+        else
+        {
+            shared_tile[ty][tile_size + threadIdx.x + rx] = 0.0f;
+        }
+    }
+
+    // верхние и нижние границы
+    if (threadIdx.y < rx)
+    {
+        int halo_row_top = blockIdx.y * blockDim.y - rx + threadIdx.y;
+        int halo_row_bottom = (blockIdx.y + 1) * blockDim.y + threadIdx.y;
+
+        if (halo_row_top >= 0 && halo_row_top < height)
+        {
+            int src_row = min(max(halo_row_top, 0), height - 1);
+            int src_col = min(max(col, 0), width - 1);
+            shared_tile[threadIdx.y][tx] = static_cast<float>(input[src_row * width + src_col]);
+        }
+        else
+        {
+            shared_tile[threadIdx.y][tx] = 0.0f;
+        }
+
+        if (halo_row_bottom < height)
+        {
+            int src_row = min(max(halo_row_bottom, 0), height - 1);
+            int src_col = min(max(col, 0), width - 1);
+            shared_tile[tile_size + threadIdx.y + rx][tx] = static_cast<float>(input[src_row * width + src_col]);
+        }
+        else
+        {
+            shared_tile[tile_size + threadIdx.y + rx][tx] = 0.0f;
         }
     }
 
