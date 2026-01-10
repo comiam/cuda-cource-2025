@@ -6,6 +6,8 @@
 #include <cuda_runtime.h>
 #include <limits>
 #include <cmath>
+#include <thrust/sort.h>
+#include <thrust/device_ptr.h>
 
 #define BLOCK_SIZE 1024 
 #define WARP_SIZE 32
@@ -57,6 +59,56 @@ __global__ void RadixSortCalcDigitsPerBlocks(
         digitsPerBlock[threadIdx.x * BLOCKS_COUNT + blockIdx.x] = tile[threadIdx.x];
     }
 } 
+
+__global__ void RadixSortCalcDigitsPerBlocksNoAtomics(
+    const int* A,
+    unsigned int* digitsPerBlock,
+    unsigned int shift,
+    unsigned int N,
+    unsigned int BLOCKS_COUNT
+) {
+    __shared__ unsigned int s_warp_hist[WARPS_PER_BLOCK][DIGITS_COUNT];
+    
+    int tid = threadIdx.x;
+    int warp_id = tid / WARP_SIZE;
+    int lane = tid % WARP_SIZE;
+    
+    for (int i = tid; i < WARPS_PER_BLOCK * DIGITS_COUNT; i += BLOCK_SIZE) {
+        ((unsigned int*)s_warp_hist)[i] = 0;
+    }
+    __syncthreads();
+
+    int col = blockIdx.x * BLOCK_SIZE + tid;
+    
+    if (col < N) {
+        unsigned int val = ((const unsigned int*)A)[col];
+        unsigned int digit = get_digit(val, shift);
+        
+        unsigned int peers_bits = 0;
+        #pragma unroll
+        for(int i = 0; i < WARP_SIZE; i++) {
+            unsigned int other_digit = __shfl_sync(0xFFFFFFFF, digit, i);
+            if (other_digit == digit) peers_bits |= (1u << i);
+        }
+        
+        unsigned int count_in_warp = __popc(peers_bits);
+        int first_lane = __ffs(peers_bits) - 1;
+        
+        if (lane == first_lane) {
+            s_warp_hist[warp_id][digit] = count_in_warp;
+        }
+    }
+    __syncthreads();
+
+    if (tid < DIGITS_COUNT) {
+        unsigned int total = 0;
+        #pragma unroll
+        for(int w = 0; w < WARPS_PER_BLOCK; ++w) {
+            total += s_warp_hist[w][tid];
+        }
+        digitsPerBlock[tid * BLOCKS_COUNT + blockIdx.x] = total;
+    }
+}
 
 __global__ void RadixSortScanHistogramBlelloch(
     unsigned int* digitsPerBlock,
@@ -270,7 +322,7 @@ __global__ void BitonicSortStep(int *dev_values, int j, int k) {
     }
 }
 
-void RunRadixSort(int* d_A, int* d_R, int N, const char* scan_mode) {
+void RunRadixSort(int* d_A, int* d_R, int N, int mode) {
     unsigned int BLOCKS_COUNT = (N + BLOCK_SIZE - 1) / BLOCK_SIZE;
     
     unsigned int *d_digitsPerBlock, *d_totalCountPerDigit;
@@ -286,34 +338,54 @@ void RunRadixSort(int* d_A, int* d_R, int N, const char* scan_mode) {
     
     int scan_threads = 512;
     if (BLOCKS_COUNT > 1024) scan_threads = 1024;
-    if (BLOCKS_COUNT > 2048 && std::string(scan_mode) == "Blelloch") {
-        printf("Warning: Blelloch не умеет обрабатывать > 2048 блоков\n");
-    }
 
     dim3 dimScanBlock(scan_threads);
     dim3 dimScanGrid(DIGITS_COUNT);
 
     FlipSignBit<<<dimGrid, dimBlock>>>(d_A, N);
 
+    float t_hist = 0.0f, t_scan = 0.0f, t_scatter = 0.0f;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start); cudaEventCreate(&stop);
+
     for(unsigned int shift = 0; shift < 32; shift += 8) {
-        RadixSortCalcDigitsPerBlocks<<<dimGrid, dimBlock>>>(d_A, d_digitsPerBlock, shift, N, BLOCKS_COUNT);
-        
-        if (std::string(scan_mode) == "Blelloch") {
-            size_t smem = 2 * scan_threads * sizeof(unsigned int);
-            RadixSortScanHistogramBlelloch<<<dimScanGrid, dimScanBlock, smem>>>(d_digitsPerBlock, d_totalCountPerDigit, BLOCKS_COUNT);
+        cudaEventRecord(start);
+        if (mode == 3) {
+            RadixSortCalcDigitsPerBlocksNoAtomics<<<dimGrid, dimBlock>>>(d_A, d_digitsPerBlock, shift, N, BLOCKS_COUNT);
         } else {
+            RadixSortCalcDigitsPerBlocks<<<dimGrid, dimBlock>>>(d_A, d_digitsPerBlock, shift, N, BLOCKS_COUNT);
+        }
+        cudaEventRecord(stop); cudaEventSynchronize(stop);
+        float dt; cudaEventElapsedTime(&dt, start, stop); t_hist += dt;
+        
+        cudaEventRecord(start);
+        if (mode == 1) {
             int hs_threads = BLOCKS_COUNT;
-            if (hs_threads > 1024) hs_threads = 1024; // костылёк, но для N=10^6 годится
+            if (hs_threads%WARP_SIZE != 0) hs_threads = (hs_threads/WARP_SIZE + 1)*WARP_SIZE;
+            if (hs_threads > 1024) hs_threads = 1024;
+            else if (hs_threads == 0) hs_threads = 32;
+
             size_t smem = 2 * BLOCKS_COUNT * sizeof(unsigned int);
             RadixSortScanHistogramHillisSteele<<<dimScanGrid, hs_threads, smem>>>(d_digitsPerBlock, d_totalCountPerDigit, BLOCKS_COUNT);
+        } else {
+            size_t smem = 2 * scan_threads * sizeof(unsigned int);
+            RadixSortScanHistogramBlelloch<<<dimScanGrid, dimScanBlock, smem>>>(d_digitsPerBlock, d_totalCountPerDigit, BLOCKS_COUNT);
         }
-        
         RadixSortScanBuckets<<<1, dimPrefix>>>(d_totalCountPerDigit);
+        cudaEventRecord(stop); cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&dt, start, stop); t_scan += dt;
         
+        cudaEventRecord(start);
         RadixSortScatter<<<dimGrid, dimBlock>>>(d_A, d_R, d_digitsPerBlock, d_totalCountPerDigit, shift, N, BLOCKS_COUNT);
+        cudaEventRecord(stop); cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&dt, start, stop); t_scatter += dt;
         
         std::swap(d_A, d_R);
     }
+
+    std::cout << "      [Kernel Logs] Hist: " << t_hist << "ms, ";
+    std::cout << "Scan: " << t_scan << "ms, ";
+    std::cout << "Scatter: " << t_scatter << "ms" << std::endl;
 
     FlipSignBit<<<dimGrid, dimBlock>>>(d_A, N);
 
@@ -331,7 +403,6 @@ void RunBitonicSortWrapper(int* d_A, int padded_N) {
         }
     }
 }
-
 int main() {
     int N_input;
     std::cout << "N:";
@@ -379,44 +450,64 @@ int main() {
     double cpu_time = std::chrono::duration<double>(cpu_end - cpu_start).count();
     std::cout << "   Time: " << std::fixed << std::setprecision(4) << cpu_time << " s\n\n";
     
-    std::cout << "2. Run GPU Radix Sort (Blelloch Scan)...\n";
+    std::cout << "2. Run Thrust Sort...\n";
     gpuErrchk(cudaMemcpy(d_A, h_A.data(), sizeInput, cudaMemcpyHostToDevice));
     cudaEventRecord(start);
-    RunRadixSort(d_A, d_R, N_input, "Blelloch");
+    thrust::device_ptr<int> t_ptr(d_A);
+    thrust::sort(t_ptr, t_ptr + N_input);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsed, start, stop);
     std::cout << "   Time: " << elapsed / 1000.0f << " s\n";
-    
     std::vector<int> h_res(N_input);
     gpuErrchk(cudaMemcpy(h_res.data(), d_A, sizeInput, cudaMemcpyDeviceToHost));
     if (h_res == h_CPU) std::cout << "   Status: Correct\n\n";
     else std::cout << "   Status: INCORRECT!\n\n";
 
-    std::cout << "3. Run GPU Radix Sort (Hillis-Steele Scan)...\n";
+    std::cout << "3. Run GPU Radix Sort (Hillis-Steele + Atomics)...\n";
     gpuErrchk(cudaMemcpy(d_A, h_A.data(), sizeInput, cudaMemcpyHostToDevice));
-
     cudaEventRecord(start);
-    RunRadixSort(d_A, d_R, N_input, "Hillis");
+    RunRadixSort(d_A, d_R, N_input, 1);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsed, start, stop);
     std::cout << "   Time: " << elapsed / 1000.0f << " s\n";
-
     gpuErrchk(cudaMemcpy(h_res.data(), d_A, sizeInput, cudaMemcpyDeviceToHost));
     if (h_res == h_CPU) std::cout << "   Status: Correct\n\n";
     else std::cout << "   Status: INCORRECT!\n\n";
 
-    std::cout << "4. Run GPU Bitonic Sort (Comparison Based, Padded input)...\n";
-    gpuErrchk(cudaMemcpy(d_A_Bitonic, h_A_Padded.data(), sizePadded, cudaMemcpyHostToDevice));
+    std::cout << "4. Run GPU Radix Sort (Blelloch + Atomics)...\n";
+    gpuErrchk(cudaMemcpy(d_A, h_A.data(), sizeInput, cudaMemcpyHostToDevice));
+    cudaEventRecord(start);
+    RunRadixSort(d_A, d_R, N_input, 2);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&elapsed, start, stop);
+    std::cout << "   Time: " << elapsed / 1000.0f << " s\n";
+    gpuErrchk(cudaMemcpy(h_res.data(), d_A, sizeInput, cudaMemcpyDeviceToHost));
+    if (h_res == h_CPU) std::cout << "   Status: Correct\n\n";
+    else std::cout << "   Status: INCORRECT!\n\n";
 
+    std::cout << "5. Run GPU Radix Sort (Blelloch + Warp Sync No Atomics)...\n";
+    gpuErrchk(cudaMemcpy(d_A, h_A.data(), sizeInput, cudaMemcpyHostToDevice));
+    cudaEventRecord(start);
+    RunRadixSort(d_A, d_R, N_input, 3);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&elapsed, start, stop);
+    std::cout << "   Time: " << elapsed / 1000.0f << " s\n";
+    gpuErrchk(cudaMemcpy(h_res.data(), d_A, sizeInput, cudaMemcpyDeviceToHost));
+    if (h_res == h_CPU) std::cout << "   Status: Correct\n\n";
+    else std::cout << "   Status: INCORRECT!\n\n";
+
+    std::cout << "6. Run GPU Bitonic Sort...\n";
+    gpuErrchk(cudaMemcpy(d_A_Bitonic, h_A_Padded.data(), sizePadded, cudaMemcpyHostToDevice));
     cudaEventRecord(start);
     RunBitonicSortWrapper(d_A_Bitonic, N_padded);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsed, start, stop);
     std::cout << "   Time: " << elapsed / 1000.0f << " s\n";
-
     gpuErrchk(cudaMemcpy(h_res.data(), d_A_Bitonic, sizeInput, cudaMemcpyDeviceToHost));
     if (h_res == h_CPU) std::cout << "   Status: Correct\n\n";
     else std::cout << "   Status: INCORRECT!\n\n";
