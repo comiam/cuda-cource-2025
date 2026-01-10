@@ -21,25 +21,45 @@
     } while(0)
 
 __global__ void countDigits(unsigned int* input, unsigned int* counts, int n, int shift, int numBlocks) {
-    __shared__ unsigned int localCounts[RADIX_SIZE];
+    __shared__ unsigned int warpCounts[8][RADIX_SIZE];
 
     int tid = threadIdx.x;
     int bid = blockIdx.x;
     int gid = bid * blockDim.x + tid;
+    int laneId = tid & 31;
+    int warpId = tid >> 5;
+    int numWarps = BLOCK_SIZE >> 5;
 
-    if (tid < RADIX_SIZE) {
-        localCounts[tid] = 0;
+    for (int i = tid; i < numWarps * RADIX_SIZE; i += BLOCK_SIZE) {
+        ((unsigned int*)warpCounts)[i] = 0;
     }
     __syncthreads();
 
+    unsigned int myDigit = RADIX_SIZE;
     if (gid < n) {
-        unsigned int digit = (input[gid] >> shift) & (RADIX_SIZE - 1);
-        atomicAdd(&localCounts[digit], 1);
+        myDigit = (input[gid] >> shift) & (RADIX_SIZE - 1);
+    }
+
+    unsigned int peersMask = 0;
+    for (int i = 0; i < 32; i++) {
+        unsigned int otherDigit = __shfl_sync(0xFFFFFFFF, myDigit, i);
+        if (otherDigit == myDigit) peersMask |= (1u << i);
+    }
+
+    unsigned int countInWarp = __popc(peersMask);
+    int firstLane = __ffs(peersMask) - 1;
+
+    if (laneId == firstLane && myDigit < RADIX_SIZE) {
+        warpCounts[warpId][myDigit] = countInWarp;
     }
     __syncthreads();
 
     if (tid < RADIX_SIZE) {
-        counts[tid * numBlocks + bid] = localCounts[tid];
+        unsigned int total = 0;
+        for (int w = 0; w < numWarps; w++) {
+            total += warpCounts[w][tid];
+        }
+        counts[tid * numBlocks + bid] = total;
     }
 }
 
@@ -70,22 +90,28 @@ __global__ void prefixSumAndOffset(unsigned int* counts, int numBlocks, int n) {
     __syncthreads();
     
     if (tid < RADIX_SIZE) {
+        unsigned int globalOffset = digitOffsets[tid];
         for (int b = 0; b < numBlocks; b++) {
-            counts[tid * numBlocks + b] += digitOffsets[tid];
+            counts[tid * numBlocks + b] += globalOffset;
         }
     }
 }
 
 __global__ void computeRanksAndScatter(unsigned int* input, unsigned int* output,
                                         unsigned int* blockOffsets, int n, int shift, int numBlocks) {
-    __shared__ unsigned int sharedDigits[BLOCK_SIZE];
-    __shared__ unsigned int sharedValues[BLOCK_SIZE];
-    __shared__ unsigned int sharedRanks[BLOCK_SIZE];
     __shared__ unsigned int digitBase[RADIX_SIZE];
+    __shared__ unsigned int warpDigitCounts[8][RADIX_SIZE];
 
     int tid = threadIdx.x;
     int bid = blockIdx.x;
     int gid = bid * blockDim.x + tid;
+    int laneId = tid & 31;
+    int warpId = tid >> 5;
+    int numWarps = BLOCK_SIZE >> 5;
+
+    for (int i = tid; i < numWarps * RADIX_SIZE; i += BLOCK_SIZE) {
+        ((unsigned int*)warpDigitCounts)[i] = 0;
+    }
 
     if (tid < RADIX_SIZE) {
         digitBase[tid] = blockOffsets[tid * numBlocks + bid];
@@ -93,31 +119,35 @@ __global__ void computeRanksAndScatter(unsigned int* input, unsigned int* output
     __syncthreads();
 
     bool valid = (gid < n);
-    unsigned int myDigit = 0;
+    unsigned int myValue = 0;
+    unsigned int myDigit = RADIX_SIZE;
     
     if (valid) {
-        sharedValues[tid] = input[gid];
-        myDigit = (sharedValues[tid] >> shift) & (RADIX_SIZE - 1);
-        sharedDigits[tid] = myDigit;
+        myValue = input[gid];
+        myDigit = (myValue >> shift) & (RADIX_SIZE - 1);
+    }
+
+    unsigned int peersMask = 0;
+    for (int i = 0; i < 32; i++) {
+        unsigned int otherDigit = __shfl_sync(0xFFFFFFFF, myDigit, i);
+        if (otherDigit == myDigit) peersMask |= (1u << i);
+    }
+
+    unsigned int rankInWarp = __popc(peersMask & ((1u << laneId) - 1));
+    unsigned int countInWarp = __popc(peersMask);
+    
+    if (rankInWarp == countInWarp - 1 && myDigit < RADIX_SIZE) {
+        warpDigitCounts[warpId][myDigit] = countInWarp;
     }
     __syncthreads();
 
-    int blockElements = min(BLOCK_SIZE, n - bid * BLOCK_SIZE);
-    
     if (valid) {
-        unsigned int rank = 0;
-        for (int i = 0; i < tid; i++) {
-            if (i < blockElements && sharedDigits[i] == myDigit) {
-                rank++;
-            }
+        unsigned int rankPrevWarps = 0;
+        for (int w = 0; w < warpId; w++) {
+            rankPrevWarps += warpDigitCounts[w][myDigit];
         }
-        sharedRanks[tid] = rank;
-    }
-    __syncthreads();
-
-    if (valid) {
-        unsigned int pos = digitBase[myDigit] + sharedRanks[tid];
-        output[pos] = sharedValues[tid];
+        unsigned int pos = digitBase[myDigit] + rankPrevWarps + rankInWarp;
+        output[pos] = myValue;
     }
 }
 
