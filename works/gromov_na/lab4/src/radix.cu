@@ -10,11 +10,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 
 #define BLOCK_SIZE 256
 #define RADIX_BITS 4
-#define RADIX_SIZE (1 << RADIX_BITS)
-#define RADIX_MASK (RADIX_SIZE - 1)
+#define RADIX_SIZE (1 << RADIX_BITS) // 16 бакетов
+#define RADIX_MASK (RADIX_SIZE - 1)  // 0xF
 
 #define cudaCheckError(ans)                   \
     {                                         \
@@ -169,27 +170,74 @@ __global__ void scatter_kernel(const unsigned int *input, unsigned int *output,
     int bid = blockIdx.x;
     int idx = bid * blockDim.x + tid;
 
+    // использовать shared memory для временного хранения значений и их цифр
+    __shared__ unsigned int temp_values[BLOCK_SIZE];
+    __shared__ unsigned int temp_digits[BLOCK_SIZE];
+
+    // загрузить данные в shared memory
     if (idx < n)
     {
-        unsigned int value = input[idx];
-        unsigned int digit = get_digit(value, shift);
+        temp_values[tid] = input[idx];
+        temp_digits[tid] = get_digit(input[idx], shift);
+    }
+    else
+    {
+        temp_values[tid] = 0;
+        temp_digits[tid] = 0;
+    }
+    __syncthreads();
+
+    // использовать warp-level синхронизацию для подсчета количества элементов с каждой цифрой
+    int warp_id = tid / 32;
+    int lane_id = tid % 32;
+
+    // использовать shared memory для отслеживания количества элементов с одинаковой цифрой в каждом warp
+    __shared__ unsigned int warp_digit_counts[BLOCK_SIZE / 32][RADIX_SIZE];
+
+    // инициализировать shared memory для каждого warp
+    if (lane_id == 0)
+    {
+        for (int i = 0; i < RADIX_SIZE; i++)
+        {
+            warp_digit_counts[warp_id][i] = 0;
+        }
+    }
+    __syncthreads();
+
+    // использовать атомарную операцию только для подсчета в пределах warp
+    // но только один раз на warp для каждой цифры
+    if (idx < n)
+    {
+        unsigned int digit = temp_digits[tid];
+        atomicAdd(&warp_digit_counts[warp_id][digit], 1);
+    }
+    __syncthreads();
+
+    // теперь вычисляем глобальные позиции для каждого элемента
+    if (idx < n)
+    {
+        unsigned int value = temp_values[tid];
+        unsigned int digit = temp_digits[tid];
 
         // вычислить позицию с использованием префиксной суммы
         unsigned int block_offset = bid * RADIX_SIZE + digit;
         unsigned int global_offset = prefix_sum[block_offset];
 
-        // использовать разделяемую память для отслеживания количества по цифрам в этом блоке
-        __shared__ unsigned int digit_counts[RADIX_SIZE];
-
-        // инициализировать разделяемую память
-        if (tid < RADIX_SIZE)
+        // вычислить локальную позицию внутри блока
+        unsigned int local_pos = 0;
+        for (int w = 0; w < warp_id; w++)
         {
-            digit_counts[tid] = 0;
+            local_pos += warp_digit_counts[w][digit];
         }
-        __syncthreads();
 
-        // атомарно увеличить счетчик для этой цифры, чтобы получить локальную позицию
-        unsigned int local_pos = atomicAdd(&digit_counts[digit], 1);
+        // добавить локальное смещение в пределах warp
+        for (int t = 0; t < lane_id; t++)
+        {
+            if (t < BLOCK_SIZE && temp_digits[t + warp_id * 32] == digit)
+            {
+                local_pos++;
+            }
+        }
 
         // итоговая позиция
         unsigned int final_pos = global_offset + local_pos;
@@ -205,27 +253,74 @@ __global__ void scatter_kernel_64(const unsigned long long *input, unsigned long
     int bid = blockIdx.x;
     int idx = bid * blockDim.x + tid;
 
+    // использовать shared memory для временного хранения значений и их цифр
+    __shared__ unsigned long long temp_values[BLOCK_SIZE];
+    __shared__ unsigned int temp_digits[BLOCK_SIZE];
+
+    // загрузить данные в shared memory
     if (idx < n)
     {
-        unsigned long long value = input[idx];
-        unsigned int digit = get_digit_64(value, shift);
+        temp_values[tid] = input[idx];
+        temp_digits[tid] = get_digit_64(input[idx], shift);
+    }
+    else
+    {
+        temp_values[tid] = 0;
+        temp_digits[tid] = 0;
+    }
+    __syncthreads();
+
+    // использовать warp-level синхронизацию для подсчета количества элементов с каждой цифрой
+    int warp_id = tid / 32;
+    int lane_id = tid % 32;
+
+    // использовать shared memory для отслеживания количества элементов с одинаковой цифрой в каждом warp
+    __shared__ unsigned int warp_digit_counts[BLOCK_SIZE / 32][RADIX_SIZE];
+
+    // инициализировать shared memory для каждого warp
+    if (lane_id == 0)
+    {
+        for (int i = 0; i < RADIX_SIZE; i++)
+        {
+            warp_digit_counts[warp_id][i] = 0;
+        }
+    }
+    __syncthreads();
+
+    // использовать атомарную операцию только для подсчета в пределах warp
+    // но только один раз на warp для каждой цифры
+    if (idx < n)
+    {
+        unsigned int digit = temp_digits[tid];
+        atomicAdd(&warp_digit_counts[warp_id][digit], 1);
+    }
+    __syncthreads();
+
+    // теперь вычисляем глобальные позиции для каждого элемента
+    if (idx < n)
+    {
+        unsigned long long value = temp_values[tid];
+        unsigned int digit = temp_digits[tid];
 
         // вычислить позицию с использованием префиксной суммы
         unsigned int block_offset = bid * RADIX_SIZE + digit;
         unsigned int global_offset = prefix_sum[block_offset];
 
-        // использовать разделяемую память для отслеживания количества по цифрам в этом блоке
-        __shared__ unsigned int digit_counts[RADIX_SIZE];
-
-        // инициализировать разделяемую память
-        if (tid < RADIX_SIZE)
+        // вычислить локальную позицию внутри блока
+        unsigned int local_pos = 0;
+        for (int w = 0; w < warp_id; w++)
         {
-            digit_counts[tid] = 0;
+            local_pos += warp_digit_counts[w][digit];
         }
-        __syncthreads();
 
-        // атомарно увеличить счетчик для этой цифры, чтобы получить локальную позицию
-        unsigned int local_pos = atomicAdd(&digit_counts[digit], 1);
+        // добавить локальное смещение в пределах warp
+        for (int t = 0; t < lane_id; t++)
+        {
+            if (t < BLOCK_SIZE && temp_digits[t + warp_id * 32] == digit)
+            {
+                local_pos++;
+            }
+        }
 
         // итоговая позиция
         unsigned int final_pos = global_offset + local_pos;
@@ -250,6 +345,13 @@ void manualRadixSortInt(int *h_data, int n)
 
     int num_blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
+    int min_blocks_for_efficiency = 256; // эффективное количество блоков для современных GPU
+    num_blocks = std::max(num_blocks, min_blocks_for_efficiency);
+
+    // создать CUDA stream для вычислений
+    cudaStream_t stream_compute;
+    cudaStreamCreate(&stream_compute);
+
     // выделить память на устройстве
     cudaCheckError(cudaMalloc(&d_input, n * sizeof(unsigned int)));
     cudaCheckError(cudaMalloc(&d_output, n * sizeof(unsigned int)));
@@ -262,27 +364,23 @@ void manualRadixSortInt(int *h_data, int n)
     // инвертировать знаковый бит для правильной обработки знаковых целых
     dim3 grid(num_blocks);
     dim3 block(BLOCK_SIZE);
-    flip_sign_bit_kernel<<<grid, block>>>(d_input, n);
+    flip_sign_bit_kernel<<<grid, block, 0, stream_compute>>>(d_input, n);
     cudaCheckError(cudaGetLastError());
-    cudaCheckError(cudaDeviceSynchronize());
 
     // главный цикл поразрядной сортировки - обрабатывать по 4 бита за раз
     for (int shift = 0; shift < 32; shift += RADIX_BITS)
     {
         // шаг гистограммы
-        histogram_kernel<<<num_blocks, BLOCK_SIZE>>>(d_input, d_hist, n, shift);
+        histogram_kernel<<<num_blocks, BLOCK_SIZE, 0, stream_compute>>>(d_input, d_hist, n, shift);
         cudaCheckError(cudaGetLastError());
-        cudaCheckError(cudaDeviceSynchronize());
 
         // шаг префиксной суммы
-        prefix_sum_kernel_optimized<<<1, RADIX_SIZE>>>(d_hist, d_prefix_sum, num_blocks);
+        prefix_sum_kernel_optimized<<<1, RADIX_SIZE, 0, stream_compute>>>(d_hist, d_prefix_sum, num_blocks);
         cudaCheckError(cudaGetLastError());
-        cudaCheckError(cudaDeviceSynchronize());
 
         // шаг рассеивания
-        scatter_kernel<<<num_blocks, BLOCK_SIZE>>>(d_input, d_output, d_prefix_sum, n, shift, num_blocks);
+        scatter_kernel<<<num_blocks, BLOCK_SIZE, 0, stream_compute>>>(d_input, d_output, d_prefix_sum, n, shift, num_blocks);
         cudaCheckError(cudaGetLastError());
-        cudaCheckError(cudaDeviceSynchronize());
 
         // поменять местами вход и выход
         d_temp = d_input;
@@ -291,12 +389,17 @@ void manualRadixSortInt(int *h_data, int n)
     }
 
     // вернуть знаковый бит, чтобы восстановить правильные значения
-    flip_sign_bit_kernel<<<grid, block>>>(d_input, n);
+    flip_sign_bit_kernel<<<grid, block, 0, stream_compute>>>(d_input, n);
     cudaCheckError(cudaGetLastError());
-    cudaCheckError(cudaDeviceSynchronize());
+
+    // синхронизировать stream перед копированием результата
+    cudaStreamSynchronize(stream_compute);
 
     // скопировать результат обратно на хост
     cudaCheckError(cudaMemcpy(h_data, d_input, n * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+    // уничтожить stream
+    cudaStreamDestroy(stream_compute);
 
     // освободить память устройства
     cudaCheckError(cudaFree(d_input));
@@ -322,6 +425,13 @@ void manualRadixSortLong(long long *h_data, int n)
 
     int num_blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
+    int min_blocks_for_efficiency = 256; // эффективное количество блоков для современных GPU
+    num_blocks = std::max(num_blocks, min_blocks_for_efficiency);
+
+    // создать CUDA stream для вычислений
+    cudaStream_t stream_compute;
+    cudaStreamCreate(&stream_compute);
+
     // выделить память на устройстве
     cudaCheckError(cudaMalloc(&d_input, n * sizeof(unsigned long long)));
     cudaCheckError(cudaMalloc(&d_output, n * sizeof(unsigned long long)));
@@ -334,27 +444,23 @@ void manualRadixSortLong(long long *h_data, int n)
     // инвертировать знаковый бит для правильной обработки знаковых целых
     dim3 grid(num_blocks);
     dim3 block(BLOCK_SIZE);
-    flip_sign_bit_kernel_64<<<grid, block>>>(d_input, n);
+    flip_sign_bit_kernel_64<<<grid, block, 0, stream_compute>>>(d_input, n);
     cudaCheckError(cudaGetLastError());
-    cudaCheckError(cudaDeviceSynchronize());
 
     // главный цикл поразрядной сортировки - обрабатывать по 4 бита за раз
     for (int shift = 0; shift < 64; shift += RADIX_BITS)
     {
         // шаг гистограммы
-        histogram_kernel_64<<<num_blocks, BLOCK_SIZE>>>(d_input, d_hist, n, shift);
+        histogram_kernel_64<<<num_blocks, BLOCK_SIZE, 0, stream_compute>>>(d_input, d_hist, n, shift);
         cudaCheckError(cudaGetLastError());
-        cudaCheckError(cudaDeviceSynchronize());
 
         // шаг префиксной суммы
-        prefix_sum_kernel_optimized<<<1, RADIX_SIZE>>>(d_hist, d_prefix_sum, num_blocks);
+        prefix_sum_kernel_optimized<<<1, RADIX_SIZE, 0, stream_compute>>>(d_hist, d_prefix_sum, num_blocks);
         cudaCheckError(cudaGetLastError());
-        cudaCheckError(cudaDeviceSynchronize());
 
         // шаг рассеивания
-        scatter_kernel_64<<<num_blocks, BLOCK_SIZE>>>(d_input, d_output, d_prefix_sum, n, shift, num_blocks);
+        scatter_kernel_64<<<num_blocks, BLOCK_SIZE, 0, stream_compute>>>(d_input, d_output, d_prefix_sum, n, shift, num_blocks);
         cudaCheckError(cudaGetLastError());
-        cudaCheckError(cudaDeviceSynchronize());
 
         // поменять местами вход и выход
         d_temp = d_input;
@@ -363,12 +469,17 @@ void manualRadixSortLong(long long *h_data, int n)
     }
 
     // вернуть знаковый бит, чтобы восстановить правильные значения
-    flip_sign_bit_kernel_64<<<grid, block>>>(d_input, n);
+    flip_sign_bit_kernel_64<<<grid, block, 0, stream_compute>>>(d_input, n);
     cudaCheckError(cudaGetLastError());
-    cudaCheckError(cudaDeviceSynchronize());
+
+    // синхронизировать stream перед копированием результата
+    cudaStreamSynchronize(stream_compute);
 
     // скопировать результат обратно на хост
     cudaCheckError(cudaMemcpy(h_data, d_input, n * sizeof(unsigned long long), cudaMemcpyDeviceToHost));
+
+    // уничтожить stream
+    cudaStreamDestroy(stream_compute);
 
     // освободить память устройства
     cudaCheckError(cudaFree(d_input));
